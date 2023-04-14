@@ -52,3 +52,11 @@ print(gen_text)
 ```
 ```text
 high entropy alloy applications include high strength steels, alloys, composites, as well some metal alloys. In recent years, there has been much interest the use of such materials for manufacturing parts, components, machinery. For example, automotive sector an increasing number applications. most widely used is steels.
+```
+
+### Pre-processing 
+- Steps on preprocessing [CORE](./preprocess/core/README.md), [MAG and Aminer](./preprocess/oag/README.md)
+- Steps on domain [partitioning](./preprocess/domain-partitioning/README.md)
+
+### Training 
+- Software envrionment, configurations, and steps on [pre-training](./train/README.md) 
