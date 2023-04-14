@@ -33,7 +33,7 @@
 
 ### Example usages
 - Forge models can be used using standard Hugging Face API
-```bash
+```python
 from transformers import GPTNeoXForCausalLM, GPTNeoXTokenizerFast
 
 model = GPTNeoXForCausalLM.from_pretrained("path_to_forge_model")
@@ -51,9 +51,6 @@ gen_text = tokenizer.batch_decode(gen_tokens)[0]
 print(gen_text)
 ```
 
-```bash
-high entropy alloy applications include high strength steels, alloys, composites, as well some metal alloys. In recent years, there has been much interest the use of such materials for manufacturing parts, components, machinery. For example, automotive sector an increasing number applications. most widely used is steels.
-```
 
 ### Pre-processing 
 - Steps on preprocessing [CORE](./preprocess/core/README.md), [MAG and Aminer](./preprocess/oag/README.md)
