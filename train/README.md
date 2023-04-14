@@ -57,8 +57,13 @@ The example configuration for [forge-mat](./configs/forge-mat.yml)
 ```
 
 ## Run
-The example [job script](./job.sb)
+The example [job script](./job.sb) and Frontier [configuration](./configs/frontier.yml) can be used to run on Frontier 
 ```bash
 sbatch job.sb
 ```
 
+## Community benchmark 
+The community benchmarks are evaluated by 
+```python
+python ./deepy.py evaluate.py -d configs ${MODEL}.yml frontier.yml --eval_tasks sciq arc_easy arc_challenge piqa hendrycksTest-college_physics hendrycksTest-college_chemistry hendrycksTest-college_medicine hendrycksTest-college_computer_science hendrycksTest-sociology openbookqa
+```
