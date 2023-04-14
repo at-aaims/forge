@@ -60,3 +60,7 @@ high entropy alloy applications include high strength steels, alloys, composites
 
 ### Training 
 - Software envrionment, configurations, and steps on [pre-training](./train/README.md) 
+
+### Raw performance data and plots 
+- The raw performance data including computation performance, loss, downstream evaluations, etc are [available](https://www.dropbox.com/sh/9uagepbj5fuzwhj/AADTMXzaf3Iwo69t1Qo-USWIa?dl=0)
+- The jupyter notebook to plot is also [provided](./plots.ipynb)
