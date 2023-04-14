@@ -2,7 +2,7 @@
 
 ## Contributions   
 -	Best practices for the end-to-end pre-training LLMs for science on HPC 
--	Fist open releases of a set of foundation models (and domain datasets) on scientific corpus  
+-	Open releases of a set of foundation models (and domain datasets) on scientific corpus  
 -	Propose scientific related down-stream benchmarks for evaluating LLMs for science
 -	Provide heuristics for large-batch training and communication requirment
 -	Evaluate current practices and share our observations 
