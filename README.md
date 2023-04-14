@@ -35,7 +35,6 @@
 - Forge models can be used using standard Hugging Face API
 ```python
 from transformers import GPTNeoXForCausalLM, GPTNeoXTokenizerFast
-
 model = GPTNeoXForCausalLM.from_pretrained("path_to_forge_model")
 tokenizer = GPTNeoXTokenizerFast.from_pretrained("path_to_forge_model")
 
