@@ -37,19 +37,18 @@
 from transformers import GPTNeoXForCausalLM, GPTNeoXTokenizerFast
 model = GPTNeoXForCausalLM.from_pretrained("path_to_forge_model")
 tokenizer = GPTNeoXTokenizerFast.from_pretrained("path_to_forge_model")
-
 prompt = "high entropy alloy applications include"
 input_ids = tokenizer(prompt, return_tensors="pt").input_ids
-
 gen_tokens = model.generate(input_ids,
                             do_sample=True,
                             temperature=0.7,
                             max_length=100)
 gen_text = tokenizer.batch_decode(gen_tokens)[0]
-
 print(gen_text)
 ```
-
+```text
+high entropy alloy applications include high strength steels, alloys, composites, as well some metal alloys. In recent years, there has been much interest the use of such materials for manufacturing parts, components, machinery. For example, automotive sector an increasing number applications. most widely used is steels.
+```
 
 ### Pre-processing 
 - Steps on preprocessing [CORE](./preprocess/core/README.md), [MAG and Aminer](./preprocess/oag/README.md)
