@@ -23,3 +23,11 @@
 |  Forge-m1 |   13B   |   30B   | [download](https://www.dropbox.com/sh/lgoq8z0aw72mtjw/AACUaW83vjUMvlmnQXBftRf-a?dl=0) |
 |  Forge-m2 |   13B   |   143B  | [download](https://www.dropbox.com/sh/unc9zjvw34h9v00/AAAsVofwizrkxpTbjY7HMsipa?dl=0) |
 |  Forge-l  |  25.6B  |   125B  | [download](https://www.dropbox.com/sh/wgl7fe7i8situkm/AACDWmIWzoPR5Nt6MZrMMDbYa?dl=0) |
+
+### Data sources
+- CORE: https://core.ac.uk/documentation/dataset  (core_2020-12-20)
+- MAG: https://www.microsoft.com/en-us/research/project/open-academic-graph/  (v2-1)
+- Aminer: https://www.microsoft.com/en-us/research/project/open-academic-graph/ (v2-1)
+- Arixv: https://huggingface.co/datasets/arxiv_dataset 
+- Scopus: 6M abstracts for the [DOIs] (https://www.dropbox.com/s/8uxxaptavgxi7r9/dois.txt?dl=0I) extracted via Scopus API
+
