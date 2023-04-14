@@ -1,0 +1,24 @@
+#!/bin/bash
+
+#BSUB -nnodes 1
+#BSUB -W 0:10
+#BSUB -P stf218
+#BSUB -alloc_flags "smt4 nvme"
+#BSUB -J extract
+#BSUB -o logs/preprocess-mag.%J.o
+#BSUB -e logs/preprocess-mag.%J.e
+#BSUB -q debug
+
+set +x
+
+module load open-ce/1.4.0-py39-0
+conda activate /gpfs/alpine/world-shared/stf218/sajal/ptprofile/megatron/Megatron-LM/envs/megatron-env
+
+# export settings
+export OMP_NUM_THREADS=1
+
+# grab nodecount
+nodes=($(cat ${LSB_DJOB_HOSTFILE} | sort | uniq | grep -v login | grep -v batch))
+nnodes=${#nodes[@]}
+
+jsrun --smpiargs="-disable_gpu_hooks" --nrs 42 -c 1 -a 1 -r 42 python read_data_mpi.py 
