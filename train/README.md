@@ -11,6 +11,34 @@ The training is adapted from [GPT-NeoX](https://github.com/EleutherAI/gpt-neox) 
 - libfabric 1.15.2.0 
 - aws-rccl-plugin 66b3b31
 
+## Build 
+- Setup environment 
+```bash
+odule load PrgEnv-gnu
+module load gcc/10.3.0
+module load rocm/5.1.0
+export HCC_AMDGPU_TARGET=gfx90a
+export PYTORCH_ROCM_ARCH=gfx90a
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash ./Miniconda3-latest-Linux-x86_64.sh -b -p miniconda
+```
+- build PyTorch
+```bash
+git clone --recursive -b IFU-master-2022-11-22 https://github.com/ROCmSoftwarePlatform/pytorch
+python tools/amd_build/build_amd.py
+USE_ROCM=1 MAX_JOBS=4 python setup.py bdist_wheel
+```
+- build DeepSpeed
+```bash
+git clone https://github.com/microsoft/DeepSpeed
+DS_BUILD_FUSED_LAMB=1 DS_BUILD_FUSED_ADAM=1 DS_BUILD_TRANSFORMER=1 DS_BUILD_STOCHASTIC_TRANSFORMER=1  DS_BUILD_UTILS=1 pip install .
+```
+- build GPT-NeoX
+```bash
+git clone https://github.com/EleutherAI/gpt-neox.git
+pip install -r requirements/requirements.txt
+```
+
 ## Configuration  
 The example configuration for [forge-mat](./configs/forge-mat.yml)
 - input data setup 
