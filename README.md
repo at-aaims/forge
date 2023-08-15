@@ -1,4 +1,4 @@
-# FORGE: Pre-training Open Foundation Model for Science 
+# FORGE: Pre-training Open Foundation Models for Science 
 
 ## Contributions   
 -	Best practices for the end-to-end pre-training LLMs for science on HPC 
@@ -64,3 +64,13 @@ high entropy alloy applications include high strength steels, alloys, composites
 ### Raw performance data and plots 
 - The raw performance data including computation performance, loss, downstream evaluations, etc are [available](https://www.dropbox.com/sh/9uagepbj5fuzwhj/AADTMXzaf3Iwo69t1Qo-USWIa?dl=0)
 - The jupyter notebook to plot is also [provided](./plots.ipynb)
+
+## Reference
+```text
+@INPROCEEDINGS{10.1145/3581784.3613215,
+  author={Junqi Yin and Sajal Dash and Feiyi Wang and Mallikarjun Shankar},
+  title={FORGE: Pre-training Open Foundation Models for Science}, 
+  booktitle={SC23: International Conference for High Performance Computing, Networking, Storage and Analysis}, 
+  year={2023},
+  doi={10.1145/3581784.3613215}}
+```
