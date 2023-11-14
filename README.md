@@ -21,8 +21,8 @@
 |  Forge-s3 |  1.44B  |   30B   | [download](https://www.dropbox.com/sh/muvwrhzebv60mzm/AADhFBQATT7CKqNTtDQcskr9a?dl=0) |
 |  Forge-s4 |  1.44B  |   257B  | [download](https://www.dropbox.com/sh/byr1ydik5n1ucod/AADOu_9C6AwVPTThTUFQ7yQba?dl=0) |
 |  Forge-m1 |   13B   |   30B   | [download](https://www.dropbox.com/sh/lgoq8z0aw72mtjw/AACUaW83vjUMvlmnQXBftRf-a?dl=0) |
-|  Forge-m2 |   13B   |   143B  | [download](https://www.dropbox.com/sh/unc9zjvw34h9v00/AAAsVofwizrkxpTbjY7HMsipa?dl=0) |
-|  Forge-l  |  25.6B  |   125B  | [download](https://www.dropbox.com/sh/wgl7fe7i8situkm/AACDWmIWzoPR5Nt6MZrMMDbYa?dl=0) |
+|  Forge-m2 |   13B   |   257B  | [download](https://www.dropbox.com/sh/g53ot3dpqfsf6fr/AAB_RFeox2tbDKVFCH0QCw5pa?dl=0) |
+|  Forge-l  |  22.4B  |   257B  | [download](https://www.dropbox.com/sh/7b9gbgcqdyph8v9/AABjNTaYu5PTjTMLb4-t6-PNa?dl=0) |
 
 ### Data sources
 - CORE: https://core.ac.uk/documentation/dataset  (core_2020-12-20)
