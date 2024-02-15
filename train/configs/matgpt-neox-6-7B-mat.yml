@@ -1,0 +1,101 @@
+# GPT-2 pretraining setup
+{
+   "hostfile": "logs/6-7B-mat/hostfile",
+   "tensorboard-dir": "logs/6-7B-mat/tensorboard",
+   "save": "logs/6-7B-mat/checkpoints",
+   "load": "logs/6-7B-mat/checkpoints",
+
+   "data-path": "/lustre/orion/stf218/scratch/junqi/frontier/data/mat/material_text_document",
+   "vocab-file": "/lustre/orion/stf218/scratch/junqi/frontier/data/mat/material_vocab.json",
+   # parallelism settings ( you will want to change these based on your cluster setup, ideally scheduling pipeline stages
+   "tokenizer_type": "HFTokenizer",
+   # across the node boundaries )
+   #"pipe-parallel-size": 1,
+   "model-parallel-size": 1,
+
+    # total batch size should be ~ 2 million
+   "train_micro_batch_size_per_gpu": 8,
+   "gas": 1,
+
+   #aws-rccl workaround
+   "num_workers": 0, 
+
+   # model settings
+   "num-layers": 32,
+   "hidden-size": 4096,
+   "num-attention-heads": 32,
+   "seq-length": 2048,
+   "max-position-embeddings": 2048,
+   "norm": "layernorm",
+   "pos-emb": "rotary",
+   "no-weight-tying": true,
+
+   # these should provide some speedup but takes a while to build, set to true if desired
+   "scaled-upper-triang-masked-softmax-fusion": true,
+   "bias-gelu-fusion": true,
+
+   # optimizer settings
+   "optimizer": {
+     "type": "LAMB",
+     "params": {
+       "lr": 0.006,
+       "betas": [0.9, 0.999],
+       "eps": 1.0e-8,
+     }
+   },
+   "min_lr": 0.0006,
+
+   "zero_optimization": {
+    "stage": 1,
+    "allgather_partitions": True,
+    "allgather_bucket_size": 500000000,
+    "overlap_comm": True,
+    "reduce_scatter": True,
+    "reduce_bucket_size": 500000000,
+    "contiguous_gradients": True,
+    "cpu_offload": False
+  },
+
+   # data settings
+   "data-impl": "mmap",
+   "split": "949,50,1",
+
+   # activation checkpointing
+   "checkpoint-activations": true,
+   "checkpoint-num-layers": 1,
+   "partition-activations": true,
+   "synchronize-each-layer": true,
+
+   # regularization
+   "gradient_clipping": 1.0,
+   "weight-decay": 0.01,
+   "hidden-dropout": 0,
+   "attention-dropout": 0,
+
+   # precision settings
+   "fp16": {
+     #"fp16": true,
+     "type": "bfloat16",
+     "enabled": true,
+     "loss_scale": 0,
+     "loss_scale_window": 1000,
+     "hysteresis": 2,
+     "min_loss_scale": 1
+   },
+
+   # misc. training settings
+   "train-iters": 3700,
+   "lr-decay-iters": 3700,
+   "distributed-backend": "nccl",
+   "lr-decay-style": "cosine",
+   "warmup": 0.01,
+   "checkpoint-factor": 100,
+   "eval-interval": 50,
+   "eval-iters": 10,
+
+   # logging
+   "log-interval": 20,
+   "steps_per_print": 10,
+   "keep-last-n-checkpoints": 100,
+   "wall_clock_breakdown": true,
+}
