@@ -1,7 +1,7 @@
-# Copyright (c) 2021, EleutherAI
+# Copyright (c) 2024, EleutherAI
 # This file is based on code by the authors denoted below and has been modified from its original version.
 #
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,16 +24,20 @@ import socket
 from typing import Dict, List
 
 import requests
-import wandb
-from wandb import UsageError
+
+try:
+    import wandb
+except ModuleNotFoundError:
+    pass
 
 import torch
 
 from deepspeed.launcher.runner import fetch_hostfile, parse_inclusion_exclusion
+from deepspeed.runtime.bf16_optimizer import BF16_Optimizer
 
 from megatron import print_rank_0
 from megatron import mpu
-from deepspeed import PipelineEngine, DeepSpeedEngine
+
 from collections import deque
 
 
@@ -60,7 +64,7 @@ def report_memory(name):
     print_rank_0(string)
 
 
-def get_attn_mask(seq_length, device):
+def get_attn_mask(seq_length, device, sliding_window_width):
     """
     Get triangular attention mask for a given sequence length / device.
     """
@@ -68,26 +72,38 @@ def get_attn_mask(seq_length, device):
     mask = torch.tril(torch.ones((1, seq_length, seq_length), device=device)).view(
         1, 1, seq_length, seq_length
     )
+    # get rid of lower diagonals than the sliding window width, if a value was provided
+    if sliding_window_width is not None:
+        mask = torch.triu(mask, diagonal=-sliding_window_width)
 
     # convert to binary
     return mask < 0.5
 
 
 def get_ltor_masks_and_position_ids(
-    data,
-    eod_token,
-    eod_mask_loss=False,
+    data, eod_token, eod_mask_loss=False, sliding_window_width=None, requires_mask=True
 ):
     """Build masks and position id for left to right model."""
 
     # Extract batch size and sequence length.
     batch_size, seq_length = data.size()
 
-    # Attention mask (lower triangular).
-    attention_mask = get_attn_mask(
-        seq_length=seq_length,
-        device=data.device,
-    )
+    if requires_mask:
+        # Attention mask (lower triangular).
+        attention_mask = get_attn_mask(
+            seq_length=seq_length,
+            device=data.device,
+            sliding_window_width=sliding_window_width,
+        )
+    else:
+        # Need this to actually do long context, 128k**2 is v big.
+        # Give it a dummy value
+        # Surely there is a better way to do this...
+        attention_mask = get_attn_mask(
+            seq_length=64,
+            device=data.device,
+            sliding_window_width=sliding_window_width,
+        )
 
     # Loss mask.
     loss_mask = torch.ones(data.size(), dtype=torch.float, device=data.device)
@@ -157,17 +173,17 @@ def init_wandb(neox_args):
         neox_args.update_value("use_wandb", use_wandb)
     if neox_args.use_wandb:
         group_name = neox_args.wandb_group
-        name = f"{socket.gethostname()}-{local_rank()}" if group_name else None
+        run_name = neox_args.wandb_run_name
         try:
             wandb.init(
                 project=neox_args.wandb_project,
                 group=group_name,
-                name=name,
+                name=run_name,
                 save_code=False,
                 force=False,
                 entity=neox_args.wandb_team,
             )
-        except UsageError as e:
+        except wandb.UsageError as e:
             neox_args.update_value("use_wandb", False)
             print(e)
             print(
@@ -266,10 +282,11 @@ class Timer:
 class Timers:
     """Group of timers."""
 
-    def __init__(self, use_wandb, tensorboard_writer):
+    def __init__(self, use_wandb, tensorboard_writer, comet_experiment):
         self.timers = {}
         self.use_wandb = use_wandb
         self.tensorboard_writer = tensorboard_writer
+        self.comet_experiment = comet_experiment
 
     def __call__(self, name):
         if name not in self.timers:
@@ -290,6 +307,14 @@ class Timers:
 
             if self.use_wandb:
                 wandb.log({f"timers/{name}": value}, step=iteration)
+
+            if self.comet_experiment:
+                self.comet_experiment.__internal_api__log_metric__(
+                    f"timers/{name}",
+                    value,
+                    framework="gpt-neox",
+                    step=iteration,
+                )
 
     def log(self, names, normalizer=1.0, reset=True):
         """Log a group of timers."""
@@ -346,8 +371,11 @@ class OverflowMonitor:
         self.optimizer = optimizer
         self.n = n
         self.history = deque(maxlen=n)
+        self.bf16 = isinstance(optimizer, BF16_Optimizer)
 
     def check(self, skipped):
+        if self.bf16:
+            return
         self.history.append(skipped)
         if (
             self.optimizer.overflow
@@ -398,10 +426,7 @@ def get_total_params(model):
     return total_n_parameters
 
 
-def setup_for_inference_or_eval(
-    use_cache=True,
-    overwrite_values=None,
-):
+def setup_for_inference_or_eval(use_cache=True, overwrite_values=None, input_args=None):
     """
     Initializes the model for evaluation or inference (doesn't load optimizer states, etc.) from command line args.
 
@@ -419,11 +444,14 @@ def setup_for_inference_or_eval(
         "checkpoint_activations": False,
         "partition_activations": False,
         "no_load_optim": True,
+        "optimizer": None,  # prevent loading optimizer (no_load_optim alone won't work)
         "zero_optimization": None,  # disable zero optimization (won't be used in inference, and loading zero optimizer can cause errors)
     }
     if overwrite_values:
         _overwrite_values.update(overwrite_values)
-    neox_args = NeoXArgs.consume_neox_args(overwrite_values=_overwrite_values)
+    neox_args = NeoXArgs.consume_neox_args(
+        overwrite_values=_overwrite_values, input_args=input_args
+    )
     neox_args.configure_distributed_args()
     neox_args.build_tokenizer()
 
@@ -437,7 +465,7 @@ def setup_for_inference_or_eval(
     initialize_megatron(neox_args)
 
     # set up model and load checkpoint.
-    model, _, _ = setup_model_and_optimizer(
+    model, _, _, _ = setup_model_and_optimizer(
         neox_args=neox_args,
         use_cache=use_cache,
         iteration=neox_args.iteration,
@@ -477,3 +505,62 @@ class CharCounter:
         end = time.time()
         self.total_time += end - start
         return batch
+
+
+def _kernel_make_viewless_tensor(inp, requires_grad):
+    """Make a viewless tensor.
+
+    View tensors have the undesirable side-affect of retaining a reference
+    to the originally-viewed tensor, even after manually setting the '.data'
+    field. This method creates a new tensor that links to the old tensor's
+    data, without linking the viewed tensor, referenced via the '._base'
+    field.
+    """
+    out = torch.empty(
+        (1,),
+        dtype=inp.dtype,
+        device=inp.device,
+        requires_grad=requires_grad,
+    )
+    out.data = inp.data
+    return out
+
+
+class MakeViewlessTensor(torch.autograd.Function):
+    """
+    Autograd function to make a viewless tensor.
+
+    This function should be used in cases where the computation graph needs
+    to be propagated, but we only want a viewless tensor (e.g.,
+    ParallelTransformer's hidden_states). Call this function by passing
+    'keep_graph = True' to 'make_viewless_tensor()'.
+    """
+
+    @staticmethod
+    def forward(ctx, inp, requires_grad):
+        return _kernel_make_viewless_tensor(inp, requires_grad)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None
+
+
+def make_viewless_tensor(inp, requires_grad, keep_graph):
+    """
+    Entry-point for creating viewless tensors.
+
+    This method should be used, rather than calling 'MakeViewlessTensor'
+    or '_kernel_make_viewless_tensor' directly. This method acts as a
+    switch for determining if an autograd function or a regular method
+    should be used to create the tensor.
+    """
+
+    # return tensor as-is, if not a 'view'
+    if inp._base is None:
+        return inp
+
+    # create viewless tensor
+    if keep_graph:
+        return MakeViewlessTensor.apply(inp, requires_grad)
+    else:
+        return _kernel_make_viewless_tensor(inp, requires_grad)

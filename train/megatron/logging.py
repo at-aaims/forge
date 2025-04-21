@@ -1,4 +1,4 @@
-# Copyright (c) 2021, EleutherAI.
+# Copyright (c) 2024, EleutherAI.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,16 +13,23 @@
 # limitations under the License.
 
 import sys
+
 import torch
-import wandb
+
+try:
+    import wandb
+except ModuleNotFoundError:
+    pass
+
 from megatron import mpu, print_rank_0
 from megatron.utils import report_memory
+import math
 
 
 class Tee:
     """Duplicate output to both stdout/err and file"""
 
-    def __init__(self, file, err=False):
+    def __init__(self, file, err: bool = False) -> None:
         self.file = open(file, "w")
         self.err = err
         if not err:
@@ -32,14 +39,14 @@ class Tee:
             self.std = sys.stderr
             sys.stderr = self
 
-    def __del__(self):
+    def __del__(self) -> None:
         if not self.err:
             sys.stdout = self.std
         else:
             sys.stderr = self.std
         self.file.close()
 
-    def write(self, data):
+    def write(self, data) -> None:
         try:
             self.file.write(data)
         except OSError:
@@ -49,14 +56,14 @@ class Tee:
         except OSError:
             pass
 
-    def flush(self):
+    def flush(self) -> None:
         try:
             self.file.flush()
         except OSError:
             pass
 
 
-def human_readable_flops(num):
+def human_readable_flops(num) -> str:
     for unit in [
         "",
         "KFLOPS",
@@ -73,17 +80,179 @@ def human_readable_flops(num):
     return "%.1f%s" % (num, "Yi")
 
 
-def get_flops(neox_args, model, iter_time_s):
+def get_actual_flops(neox_args, iter_time_s) -> float:
+    """
+    This function finds the actual FLOPs achieved accounting for implementation and hardware details. Also used for HFU.
+
+    For more detail on flop calculations, see https://github.com/EleutherAI/cookbook/tree/main/calc and https://github.com/Zyphra/zcookbook/tree/main/calc
+
+    Use FLOPS calculation from Megatron-DeepSpeed:
+    https://github.com/microsoft/Megatron-DeepSpeed/blob/cc3a94c636789f74be2bc6cfc62a3d723fd5d749/megatron/utils.py#L253
+    They get it from https://arxiv.org/pdf/2104.04473.pdf
+    """
     world_size = torch.distributed.get_world_size()
-    ff = model.total_params * 6
-    attn = neox_args.seq_length * neox_args.hidden_size * neox_args.num_layers * 60
-    flops = (
-        neox_args.train_batch_size
-        * neox_args.seq_length
-        * (ff + attn)
-        / (iter_time_s * world_size)
-    )
-    return flops
+    vocab_size = neox_args.padded_vocab_size
+    batch_size = neox_args.train_batch_size
+    seq_len = neox_args.seq_length
+    hidden_size = neox_args.hidden_size
+    num_layers = neox_args.num_layers
+    ckpt_activations_factor = 4 if neox_args.checkpoint_activations else 3
+    if "rwkv" in neox_args.attention_config:
+        num_heads = neox_args.num_attention_heads
+
+        flops_per_iteration = (
+            batch_size
+            * seq_len
+            * (
+                78 * hidden_size * hidden_size * num_layers
+                + 84 * hidden_size * num_layers
+                + 16 * hidden_size
+                + 12 * hidden_size * vocab_size
+                + 18 * hidden_size * hidden_size * num_layers / num_heads
+            )
+        )
+    elif "mamba" in neox_args.attention_config:
+        # from https://github.com/Zyphra/zcookbook/blob/main/calc/calc_mamba_flops.py
+        if neox_args.expansion_factor:
+            d_inner = neox_args.hidden_size * neox_args.expansion_factor
+        elif neox_args.intermediate_size:
+            d_inner = neox_args.intermediate_size
+        else:
+            d_inner = neox_args.hidden_size * 2  # default expansion factor
+        d_state = 16  # TODO make d_state an arg. Currently hardcoded in neox mamba definition and here
+        conv_dimension = 4  # TODO make conv_dimension an arg. Currently hardcoded in neox mamba definition and here
+        dt_rank = math.ceil(neox_args.hidden_size / 16)
+        ssm_flops = (
+            ckpt_activations_factor
+            * d_inner
+            * seq_len
+            * batch_size
+            * (11 * d_state + 4 * dt_rank + 1)
+        )
+        mamba_projectors_flops = (
+            ckpt_activations_factor * seq_len * batch_size * 6 * d_inner * hidden_size
+        )
+        mamba_conv_flops = (
+            ckpt_activations_factor
+            * seq_len
+            * batch_size
+            * 2
+            * d_inner
+            * conv_dimension
+        )
+        mamba_flops = ssm_flops + mamba_projectors_flops + mamba_conv_flops
+        embedding_flops = 6 * seq_len * batch_size * hidden_size * vocab_size
+        flops_per_iteration = mamba_flops * num_layers + embedding_flops
+    else: # LORA - MLP layers only 
+        r = 256 # hardcode lora rank for now 
+        flops_per_iteration = (
+            4
+            * ckpt_activations_factor
+            * batch_size
+            * seq_len
+            * num_layers
+            * (hidden_size**2)
+            * (
+                2.0
+                + 4.0*(r/hidden_size)**2
+                + (seq_len/hidden_size)
+                + (3.0*vocab_size / (8.0 * num_layers * hidden_size))
+            )
+        )
+    '''    
+    else:
+        flops_per_iteration = (
+            24
+            * ckpt_activations_factor
+            * batch_size
+            * seq_len
+            * num_layers
+            * (hidden_size**2)
+            * (
+                1.0
+                + (seq_len / (6.0 * hidden_size))
+                + (vocab_size / (16.0 * num_layers * hidden_size))
+            )
+        )
+    '''
+    return flops_per_iteration / (iter_time_s * world_size)
+
+
+def get_forward_backward_flops(neox_args, iter_time_s) -> float:
+    """
+    This function finds the estimated FLOPs required by a single forward+backward pass without accounting for implementation and hardware details. Also used for MFU.
+
+    Mostly duplicated from get_actual_flops with just a change in activation checkpointing for now, but these may diverge over time as implementation details accumulate so I think 2 separate functions are appropriate.
+
+    For more detail on flop calculations, see https://github.com/EleutherAI/cookbook/tree/main/calc and https://github.com/Zyphra/zcookbook/tree/main/calc
+
+    Use FLOPS calculation from Megatron-DeepSpeed:
+    https://github.com/microsoft/Megatron-DeepSpeed/blob/cc3a94c636789f74be2bc6cfc62a3d723fd5d749/megatron/utils.py#L253
+    They get it from https://arxiv.org/pdf/2104.04473.pdf
+    """
+    world_size = torch.distributed.get_world_size()
+    vocab_size = neox_args.padded_vocab_size
+    batch_size = neox_args.train_batch_size
+    seq_len = neox_args.seq_length
+    hidden_size = neox_args.hidden_size
+    num_layers = neox_args.num_layers
+    fwd_bwd_factor = 3  # 1 for fwd, 2 for bwd and weight update
+    if "rwkv" in neox_args.attention_config:
+        num_heads = neox_args.num_attention_heads
+
+        flops_per_iteration = (
+            batch_size
+            * seq_len
+            * (
+                78 * hidden_size * hidden_size * num_layers
+                + 84 * hidden_size * num_layers
+                + 16 * hidden_size
+                + 12 * hidden_size * vocab_size
+                + 18 * hidden_size * hidden_size * num_layers / num_heads
+            )
+        )
+    elif "mamba" in neox_args.attention_config:
+        # from https://github.com/Zyphra/zcookbook/blob/main/calc/calc_mamba_flops.py
+        if neox_args.expansion_factor:
+            d_inner = neox_args.hidden_size * neox_args.expansion_factor
+        elif neox_args.intermediate_size:
+            d_inner = neox_args.intermediate_size
+        else:
+            d_inner = neox_args.hidden_size * 2  # default expansion factor
+        d_state = 16  # TODO make d_state an arg. Currently hardcoded in neox mamba definition and here
+        conv_dimension = 4  # TODO make conv_dimension an arg. Currently hardcoded in neox mamba definition and here
+        dt_rank = math.ceil(neox_args.hidden_size / 16)
+        ssm_flops = (
+            fwd_bwd_factor
+            * d_inner
+            * seq_len
+            * batch_size
+            * (11 * d_state + 4 * dt_rank + 1)
+        )
+        mamba_projectors_flops = (
+            fwd_bwd_factor * seq_len * batch_size * 6 * d_inner * hidden_size
+        )
+        mamba_conv_flops = (
+            fwd_bwd_factor * seq_len * batch_size * 2 * d_inner * conv_dimension
+        )
+        mamba_flops = ssm_flops + mamba_projectors_flops + mamba_conv_flops
+        embedding_flops = 6 * seq_len * batch_size * hidden_size * vocab_size
+        flops_per_iteration = mamba_flops * num_layers + embedding_flops
+    else:
+        flops_per_iteration = (
+            24
+            * fwd_bwd_factor
+            * batch_size
+            * seq_len
+            * num_layers
+            * (hidden_size**2)
+            * (
+                1.0
+                + (seq_len / (6.0 * hidden_size))
+                + (vocab_size / (16.0 * num_layers * hidden_size))
+            )
+        )
+    return flops_per_iteration / (iter_time_s * world_size)
 
 
 def training_log(
@@ -164,6 +333,7 @@ def training_log(
                             iteration,
                             use_wandb=neox_args.use_wandb,
                             tensorboard_writer=neox_args.tensorboard_writer,
+                            comet_experiment=neox_args.comet_experiment,
                         )
 
     # write losses, lr, etc. every step
@@ -173,6 +343,7 @@ def training_log(
         iteration,
         use_wandb=neox_args.use_wandb,
         tensorboard_writer=neox_args.tensorboard_writer,
+        comet_experiment=neox_args.comet_experiment,
     )
     for key in loss_dict:
         tb_wandb_log(
@@ -181,6 +352,7 @@ def training_log(
             iteration,
             use_wandb=neox_args.use_wandb,
             tensorboard_writer=neox_args.tensorboard_writer,
+            comet_experiment=neox_args.comet_experiment,
         )
     if neox_args.fp16:
         tb_wandb_log(
@@ -189,6 +361,7 @@ def training_log(
             iteration,
             use_wandb=neox_args.use_wandb,
             tensorboard_writer=neox_args.tensorboard_writer,
+            comet_experiment=neox_args.comet_experiment,
         )
 
     # log gradient noise scale
@@ -200,6 +373,7 @@ def training_log(
                 iteration,
                 use_wandb=neox_args.use_wandb,
                 tensorboard_writer=neox_args.tensorboard_writer,
+                comet_experiment=neox_args.comet_experiment,
             )
 
     # (optional) Log optimizer states to wandb / tb every step
@@ -214,6 +388,7 @@ def training_log(
                         iteration,
                         use_wandb=neox_args.use_wandb,
                         tensorboard_writer=neox_args.tensorboard_writer,
+                        comet_experiment=neox_args.comet_experiment,
                     )
 
     # (optional) Log grad/param norms to wandb / tb every step
@@ -239,6 +414,7 @@ def training_log(
                             iteration,
                             use_wandb=neox_args.use_wandb,
                             tensorboard_writer=neox_args.tensorboard_writer,
+                            comet_experiment=neox_args.comet_experiment,
                             all_ranks=True,
                         )
             if neox_args.log_grad_norm:
@@ -254,6 +430,7 @@ def training_log(
                             iteration,
                             use_wandb=neox_args.use_wandb,
                             tensorboard_writer=neox_args.tensorboard_writer,
+                            comet_experiment=neox_args.comet_experiment,
                             all_ranks=True,
                         )
             if neox_args.log_param_norm:
@@ -263,6 +440,7 @@ def training_log(
                     iteration,
                     use_wandb=neox_args.use_wandb,
                     tensorboard_writer=neox_args.tensorboard_writer,
+                    comet_experiment=neox_args.comet_experiment,
                     all_ranks=True,
                 )
 
@@ -271,6 +449,8 @@ def training_log(
         elapsed_time = timers("interval time").elapsed()
         iteration_time = elapsed_time / neox_args.log_interval
         samples_per_sec = neox_args.train_batch_size / iteration_time
+        steps_per_sec = 1 / iteration_time
+        tokens_per_sec = samples_per_sec * neox_args.seq_length
         log_string = " samples/sec: {:.3f} |".format(samples_per_sec)
         tb_wandb_log(
             "runtime/samples_per_sec",
@@ -278,6 +458,7 @@ def training_log(
             iteration,
             use_wandb=neox_args.use_wandb,
             tensorboard_writer=neox_args.tensorboard_writer,
+            comet_experiment=neox_args.comet_experiment,
         )
         tb_wandb_log(
             "runtime/iteration_time",
@@ -285,6 +466,23 @@ def training_log(
             iteration,
             use_wandb=neox_args.use_wandb,
             tensorboard_writer=neox_args.tensorboard_writer,
+            comet_experiment=neox_args.comet_experiment,
+        )
+        tb_wandb_log(
+            "runtime/steps_per_sec",
+            steps_per_sec,
+            iteration,
+            use_wandb=neox_args.use_wandb,
+            tensorboard_writer=neox_args.tensorboard_writer,
+            comet_experiment=neox_args.comet_experiment,
+        )
+        tb_wandb_log(
+            "runtime/tokens_per_sec",
+            tokens_per_sec,
+            iteration,
+            use_wandb=neox_args.use_wandb,
+            tensorboard_writer=neox_args.tensorboard_writer,
+            comet_experiment=neox_args.comet_experiment,
         )
         log_string += " iteration {:8d}/{:8d} |".format(
             iteration, neox_args.train_iters
@@ -297,10 +495,20 @@ def training_log(
             1, neox_args.log_interval - total_loss_dict[skipped_iters_key]
         )
 
+        # log curriculum learning
+        if neox_args.curriculum_learning:
+            tb_wandb_log(
+                "curriculum_seqlen",
+                neox_args.curriculum_seqlen,
+                iteration,
+                use_wandb=neox_args.use_wandb,
+                tensorboard_writer=neox_args.tensorboard_writer,
+                comet_experiment=neox_args.comet_experiment,
+            )
+
         # log tflop / gpu
-        flops_per_s_per_gpu = get_flops(
-            neox_args=neox_args, model=model, iter_time_s=iteration_time
-        )
+        flops_per_s_per_gpu = get_actual_flops(neox_args, iteration_time)
+
         log_string += (
             f" approx flops per GPU: {human_readable_flops(flops_per_s_per_gpu)} |"
         )
@@ -310,7 +518,41 @@ def training_log(
             iteration,
             use_wandb=neox_args.use_wandb,
             tensorboard_writer=neox_args.tensorboard_writer,
+            comet_experiment=neox_args.comet_experiment,
         )
+
+        if neox_args.peak_theoretical_tflops:
+            # Convert peak theoretical TFLOPS to FLOPS for consistent units
+            peak_theoretical_flops = neox_args.peak_theoretical_tflops * (10**12)
+
+            # Calculate MFU and HFU as percentages
+            mfu = (
+                get_forward_backward_flops(neox_args, iteration_time)
+                / peak_theoretical_flops
+            ) * 100
+            hfu = (flops_per_s_per_gpu / peak_theoretical_flops) * 100
+
+            # Add to log string
+            log_string += f" MFU: {mfu:.2f}% | HFU: {hfu:.2f}% |"
+
+            # Log to tracking systems
+            tb_wandb_log(
+                "runtime/model_flops_utilization",
+                mfu,
+                iteration,
+                use_wandb=neox_args.use_wandb,
+                tensorboard_writer=neox_args.tensorboard_writer,
+                comet_experiment=neox_args.comet_experiment,
+            )
+
+            tb_wandb_log(
+                "runtime/hardware_flops_utilization",
+                hfu,
+                iteration,
+                use_wandb=neox_args.use_wandb,
+                tensorboard_writer=neox_args.tensorboard_writer,
+                comet_experiment=neox_args.comet_experiment,
+            )
 
         for key in total_loss_dict:
             if key not in [skipped_iters_key, got_nan_key]:
@@ -343,7 +585,13 @@ def training_log(
 
 
 def tb_wandb_log(
-    key, value, iteration_no, use_wandb, tensorboard_writer=None, all_ranks=False
+    key: str,
+    value: float,
+    iteration_no: int,
+    use_wandb: bool,
+    tensorboard_writer=None,
+    comet_experiment=None,
+    all_ranks: bool = False,
 ):
     # logs to both tb and wandb (if present) from the zeroth rank
     do_log = torch.distributed.get_rank() == 0 or all_ranks
@@ -352,3 +600,7 @@ def tb_wandb_log(
             tensorboard_writer.add_scalar(key, value, iteration_no)
         if use_wandb:
             wandb.log({key: value}, step=iteration_no)
+        if comet_experiment:
+            comet_experiment.__internal_api__log_metric__(
+                key, value, framework="gpt-neox", step=iteration_no
+            )

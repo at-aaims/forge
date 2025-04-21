@@ -1,7 +1,20 @@
+# Copyright (c) 2024, EleutherAI
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from setuptools import setup, find_packages
 from torch.utils import cpp_extension
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-from torch.cuda import is_available as torch_cuda_available
 from pathlib import Path
 import subprocess
 
@@ -28,14 +41,14 @@ cc_flag = []
 
 nvcc_flags = [
     "-O3",
-#    "-gencode",
-#    "arch=compute_70,code=sm_70",
-#    "--use_fast_math",
-    "-U__HIP_NO_HALF_OPERATORS__",
-    "-U__HIP_NO_HALF_CONVERSIONS__",
+    #"-gencode",
+    #"arch=compute_70,code=sm_70",
+    #"--use_fast_math",
+    "-U__CUDA_NO_HALF_OPERATORS__",
+    "-U__CUDA_NO_HALF_CONVERSIONS__",
     "-D__HIP_PLATFORM_AMD__=1",
-#    "--expt-relaxed-constexpr",
-#    "--expt-extended-lambda",
+    #"--expt-relaxed-constexpr",
+    #"--expt-extended-lambda",
 ]
 cuda_ext_args = {"cxx": ["-O3"], "nvcc": nvcc_flags + cc_flag}
 layernorm_cuda_args = {
@@ -44,29 +57,35 @@ layernorm_cuda_args = {
 }
 setup(
     name="fused_kernels",
-    version="0.0.1",
-    author="Sid Black & Alejandro Molina et al.",
-    author_email="alejandro.molina@aleph-alpha.de",
+    version="0.0.2",
+    author="EleutherAI",
+    author_email="contact@eleuther.ai",
     include_package_data=False,
     ext_modules=[
         CUDAExtension(
-            "scaled_upper_triang_masked_softmax_cuda",
-            [
-                str(srcpath / "scaled_upper_triang_masked_softmax.cpp"),
+            name="scaled_upper_triang_masked_softmax_cuda",
+            sources=[
+                #str(srcpath / "scaled_upper_triang_masked_softmax.cpp"),
                 str(srcpath / "scaled_upper_triang_masked_softmax_cuda.cu"),
             ],
             extra_compile_args=cuda_ext_args,
         ),
         CUDAExtension(
-            "scaled_masked_softmax_cuda",
-            [
-                str(srcpath / "scaled_masked_softmax.cpp"),
+            name="scaled_masked_softmax_cuda",
+            sources=[
+                #str(srcpath / "scaled_masked_softmax.cpp"),
                 str(srcpath / "scaled_masked_softmax_cuda.cu"),
             ],
             extra_compile_args=cuda_ext_args,
         ),
-    ]
-    if torch_cuda_available()
-    else [],
+        CUDAExtension(
+            name="fused_rotary_positional_embedding",
+            sources=[
+                #str(srcpath / "fused_rotary_positional_embedding.cpp"),
+                str(srcpath / "fused_rotary_positional_embedding_cuda.cu"),
+            ],
+            extra_compile_args=cuda_ext_args,
+        ),
+    ],
     cmdclass={"build_ext": BuildExtension},
 )

@@ -1,0 +1,30 @@
+ninja_required_version = 1.3
+cxx = c++
+nvcc = /opt/rocm-6.1.3/bin/hipcc
+
+cflags = -pthread -B /sw/aaims/crusher/build-rocm613/xforge-env/compiler_compat -fno-strict-overflow -DNDEBUG -O2 -Wall -fPIC -O2 -isystem /sw/aaims/crusher/build-rocm613/xforge-env/include -fPIC -O2 -isystem /sw/aaims/crusher/build-rocm613/xforge-env/include -fPIC -I/sw/aaims/crusher/build-rocm613/xforge-env/lib/python3.12/site-packages/torch/include -I/sw/aaims/crusher/build-rocm613/xforge-env/lib/python3.12/site-packages/torch/include/torch/csrc/api/include -I/sw/aaims/crusher/build-rocm613/xforge-env/lib/python3.12/site-packages/torch/include/TH -I/sw/aaims/crusher/build-rocm613/xforge-env/lib/python3.12/site-packages/torch/include/THC -I/sw/aaims/crusher/build-rocm613/xforge-env/lib/python3.12/site-packages/torch/include/THH -I/opt/rocm-6.1.3/include -I/sw/aaims/crusher/build-rocm613/xforge-env/include/python3.12 -c
+post_cflags = -fPIC -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -fPIC -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -O3 -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1011"' -DTORCH_EXTENSION_NAME=fused_rotary_positional_embedding -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++17
+cuda_cflags = -I/sw/aaims/crusher/build-rocm613/xforge-env/lib/python3.12/site-packages/torch/include -I/sw/aaims/crusher/build-rocm613/xforge-env/lib/python3.12/site-packages/torch/include/torch/csrc/api/include -I/sw/aaims/crusher/build-rocm613/xforge-env/lib/python3.12/site-packages/torch/include/TH -I/sw/aaims/crusher/build-rocm613/xforge-env/lib/python3.12/site-packages/torch/include/THC -I/sw/aaims/crusher/build-rocm613/xforge-env/lib/python3.12/site-packages/torch/include/THH -I/opt/rocm-6.1.3/include -I/sw/aaims/crusher/build-rocm613/xforge-env/include/python3.12 -c
+cuda_post_cflags = -fPIC -D__HIP_PLATFORM_AMD__=1 -DUSE_ROCM=1 -DHIPBLAS_V2 -DCUDA_HAS_FP16=1 -D__HIP_NO_HALF_OPERATORS__=1 -D__HIP_NO_HALF_CONVERSIONS__=1 -O3 -U__CUDA_NO_HALF_OPERATORS__ -U__CUDA_NO_HALF_CONVERSIONS__ -D__HIP_PLATFORM_AMD__=1 -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1011"' -DTORCH_EXTENSION_NAME=fused_rotary_positional_embedding -D_GLIBCXX_USE_CXX11_ABI=0 --offload-arch=gfx900 --offload-arch=gfx906 --offload-arch=gfx908 --offload-arch=gfx90a --offload-arch=gfx1030 --offload-arch=gfx1100 --offload-arch=gfx942 -fno-gpu-rdc -std=c++17
+cuda_dlink_post_cflags = 
+ldflags = 
+
+rule compile
+  command = $cxx -MMD -MF $out.d $cflags -c $in -o $out $post_cflags
+  depfile = $out.d
+  deps = gcc
+
+rule cuda_compile
+  command = $nvcc  $cuda_cflags -c $in -o $out $cuda_post_cflags
+
+
+
+
+
+build /lustre/orion/stf218/scratch/junqi/xforge/context-parallel/gpt-neox-lr/megatron/fused_kernels/build/temp.linux-x86_64-cpython-312/fused_rotary_positional_embedding_hip.o: cuda_compile /lustre/orion/stf218/scratch/junqi/xforge/context-parallel/gpt-neox-lr/megatron/fused_kernels/fused_rotary_positional_embedding_hip.hip
+
+
+
+
+
+

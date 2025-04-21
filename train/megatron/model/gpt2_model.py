@@ -1,7 +1,7 @@
-# Copyright (c) 2021 EleutherAI
+# Copyright (c) 2024 EleutherAI
 # This file is based on code by the authors denoted below and has been modified from its original version.
 #
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,6 +37,8 @@ from megatron.model.transformer import (
     ParallelLinear,
 )
 from megatron.model.gmlp import GMLPBlock
+from megatron.model.rwkv.v6 import RWKVResidualLayerPipe
+from megatron.model.mamba import ParallelMambaResidualLayerPipe
 from megatron.model.word_embeddings import EmbeddingPipe, SoftEmbedding
 
 # Pipeline parallelism
@@ -45,7 +47,13 @@ from typing import Union, List
 
 
 def gpt2_attention_mask_func(attention_scores, ltor_mask):
-    attention_scores.masked_fill_(ltor_mask, -10000.0)
+    mask_value = torch.finfo(attention_scores.dtype).min
+    # Need to be a tensor, otherwise we get error: `RuntimeError: expected scalar type float but found double`.
+    # Need to be on the same device, otherwise `RuntimeError: ..., x and y to be on the same device`
+    mask_value = torch.tensor(
+        mask_value, dtype=attention_scores.dtype, device=attention_scores.device
+    )
+    attention_scores.masked_fill_(ltor_mask, mask_value)
     return attention_scores
 
 
@@ -66,7 +74,30 @@ def cross_entropy(output, labels, _fp16=False):
     else:
         losses = mpu.vocab_parallel_cross_entropy(output.float().contiguous(), labels)
     loss_mask = loss_mask.view(-1)
-    loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask.sum()
+    loss_mask_sum = loss_mask.sum()
+    if mpu.get_context_parallel_world_size() > 1:
+        dt = loss_mask_sum.dtype
+        if dt == torch.bfloat16 and mpu.initialize.get_fp32_allreduce():
+            loss_mask_sum = loss_mask_sum.float()
+        torch.distributed.all_reduce(
+            loss_mask_sum,
+            op=torch.distributed.ReduceOp.SUM,
+            group=mpu.get_context_parallel_group(),
+        )
+        if dt == torch.bfloat16 and mpu.initialize.get_fp32_allreduce():
+            loss_mask_sum = loss_mask_sum.bfloat16()
+        loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask_sum
+        if dt == torch.bfloat16 and mpu.initialize.get_fp32_allreduce():
+            loss = loss.float()
+        torch.distributed.all_reduce(
+            loss,
+            op=torch.distributed.ReduceOp.SUM,
+            group=mpu.get_context_parallel_group(),
+        )
+        if dt == torch.bfloat16 and mpu.initialize.get_fp32_allreduce():
+            loss = loss.bfloat16()
+    else:
+        loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask_sum
     return loss
 
 
@@ -128,7 +159,11 @@ class GPT2ModelPipe(PipelineModule, torch.nn.Module):
             if self.neox_args.checkpoint_activations
             else 0,
             partition_method=neox_args.pipe_partition_method,
-            checkpointable_layers=["GMLPBlock", "ParallelTransformerLayerPipe"],
+            checkpointable_layers=[
+                "GMLPBlock",
+                "ParallelTransformerLayerPipe",
+                "ParallelMambaResidualLayerPipe",
+            ],
         )
 
     def insert_layers(
@@ -160,7 +195,12 @@ class GPT2ModelPipe(PipelineModule, torch.nn.Module):
             topology=self.__topology__,
             activation_checkpoint_interval=self.activation_checkpoint_interval,
             partition_method=self.neox_args.pipe_partition_method,
-            checkpointable_layers=["GMLPBlock", "ParallelTransformerLayerPipe"],
+            checkpointable_layers=[
+                "GMLPBlock",
+                "ParallelTransformerLayerPipe",
+                "ParallelMambaResidualLayerPipe",
+                "RWKVResidualLayerPipe",
+            ],
         )
 
     def init_specs(self):
@@ -236,6 +276,24 @@ class GPT2ModelPipe(PipelineModule, torch.nn.Module):
                         mask_fn=gpt2_attention_mask_func,
                     )
                 )
+            elif layer_type == "rwkv":
+                self.specs.append(
+                    LayerSpec(
+                        RWKVResidualLayerPipe,
+                        neox_args=self.neox_args,
+                        layer_number=i,
+                    )
+                )
+            elif layer_type in ["mamba"]:
+                self.specs.append(
+                    LayerSpec(
+                        ParallelMambaResidualLayerPipe,
+                        neox_args=self.neox_args,
+                        init_method=self.init_method,
+                        output_layer_init_method=self.output_layer_init_method,
+                        layer_number=i,
+                    )
+                )
             else:
                 self.specs.append(
                     LayerSpec(
@@ -264,8 +322,19 @@ class GPT2ModelPipe(PipelineModule, torch.nn.Module):
 
         def _logits_helper(embedding, lm_output):
             """Just a wrapper to massage inputs/outputs from pipeline."""
+            if self.neox_args.use_mup:
+                # Since we're using pipeline parallelism, we can't directly use MuReadout. Instead, use this workaround that does the same thing as MuReadout.
+                # https://github.com/microsoft/mup/issues/6#issuecomment-1082156274
+                lm_output = (
+                    lm_output
+                    / self.tied_modules.embed.word_embeddings.weight.infshape.width_mult()
+                )
+
             logits = parallel_lm_logits(
-                lm_output, embedding.word_embeddings_weight, self.parallel_output
+                lm_output,
+                embedding.word_embeddings_weight,
+                self.parallel_output,
+                seq_parallel=self.neox_args.sequence_parallel,
             )
             return logits
 
@@ -292,6 +361,7 @@ class GPT2ModelPipe(PipelineModule, torch.nn.Module):
                     neox_args=self.neox_args,
                     init_method=self.init_method,
                     parallel_output=self.parallel_output,
+                    is_last_layer=True,
                 )
             )
 
@@ -312,6 +382,7 @@ class GPT2ModelPipe(PipelineModule, torch.nn.Module):
         recursive_setattr(self.forward_funcs, "use_cache", use_cache, assert_type=bool)
         # then set parallel output of the final layer to false so we don't have to gather the output manually
         self._set_parallel_output(False)
+        recursive_setattr(self.forward_funcs, "training", False)
 
     def train_mode(self):
         """
@@ -322,6 +393,7 @@ class GPT2ModelPipe(PipelineModule, torch.nn.Module):
         recursive_setattr(self.forward_funcs, "use_cache", False)
         # then set parallel output to true (more efficient training)
         self._set_parallel_output(True)
+        recursive_setattr(self.forward_funcs, "training", True)
 
     def clear_cache(self):
         """

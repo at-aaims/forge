@@ -1,0 +1,7 @@
+# ninja log v5
+1	152735	1738209222913749000	/autofs/nccs-svm1_sw/aaims/crusher/build-rocm613/gpt-neox/megatron/fused_kernels/build/temp.linux-x86_64-cpython-312/scaled_upper_triang_masked_softmax_hip.o	1dc3fd3c75c0e638
+2	163135	1738209386686730000	/autofs/nccs-svm1_sw/aaims/crusher/build-rocm613/gpt-neox/megatron/fused_kernels/build/temp.linux-x86_64-cpython-312/scaled_masked_softmax_hip.o	3986529b67aad011
+2	143219	1738209530544826000	/autofs/nccs-svm1_sw/aaims/crusher/build-rocm613/gpt-neox/megatron/fused_kernels/build/temp.linux-x86_64-cpython-312/fused_rotary_positional_embedding_hip.o	140ecac6d903ff1
+2	160074	1739371251000000000	/lustre/orion/stf218/scratch/junqi/xforge/context-parallel/gpt-neox-lr/megatron/fused_kernels/build/temp.linux-x86_64-cpython-312/scaled_upper_triang_masked_softmax_hip.o	c1324efb597aae13
+2	157895	1739371410000000000	/lustre/orion/stf218/scratch/junqi/xforge/context-parallel/gpt-neox-lr/megatron/fused_kernels/build/temp.linux-x86_64-cpython-312/scaled_masked_softmax_hip.o	76b0a8e0a6ab9758
+1	143176	1739371554000000000	/lustre/orion/stf218/scratch/junqi/xforge/context-parallel/gpt-neox-lr/megatron/fused_kernels/build/temp.linux-x86_64-cpython-312/fused_rotary_positional_embedding_hip.o	5eef180a4d04c929

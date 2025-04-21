@@ -1,7 +1,7 @@
 #
-# Copyright 2021 Biderman et al. This file is based on code by the authors denoted below and has been modified from its original version.
+# Copyright 2024 Biderman et al. This file is based on code by the authors denoted below and has been modified from its original version.
 #
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,5 +16,8 @@
 # limitations under the License.
 
 from .gpt2_model import GPT2ModelPipe
-from .utils import get_params_for_weight_decay_optimization
+from .utils import (
+    get_params_for_weight_decay_optimization,
+    mark_norms_for_sequence_parallel_grad_sync,
+)
 from .word_embeddings import SoftEmbedding

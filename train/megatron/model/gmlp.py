@@ -1,4 +1,4 @@
-# Copyright (c) 2021, EleutherAI
+# Copyright (c) 2024, EleutherAI
 # This file is based on code by the authors denoted below and has been modified from its original version.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -112,7 +112,7 @@ class GMLPBlock(nn.Module):
             init_method=init_method,
             skip_bias_add=True,
         )
-        self.activation_func = get_activation(neox_args)
+        self.activation_func, _ = get_activation(neox_args)
         ff_dim_parallel = mpu.divide(ff_dim, mpu.get_model_parallel_world_size())
         if neox_args.attention_config[layer_number] == "amlp":
             d_attn = neox_args.gmlp_attn_dim

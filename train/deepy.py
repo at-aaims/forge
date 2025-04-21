@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright (c) 2021, EleutherAI
+# Copyright (c) 2024, EleutherAI
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,23 +16,26 @@
 import logging
 import os
 
-import deepspeed
-from deepspeed.launcher.runner import main
-
-logging.basicConfig(level=os.environ.get("LOGLEVEL", "INFO"))
-
-from megatron.neox_arguments import NeoXArgs
-from megatron.utils import get_wandb_api_key
+import deepspeed.launcher.runner
 
 
-neox_args = NeoXArgs.consume_deepy_args()
-deepspeed_main_args = neox_args.get_deepspeed_main_args()
+def main(input_args=None):
+    logging.basicConfig(level=os.environ.get("LOGLEVEL", "INFO"))
 
-# Extract wandb API key and inject into worker environments
-wandb_token = get_wandb_api_key(neox_args=neox_args)
-if wandb_token is not None:
-    deepspeed.launcher.runner.EXPORT_ENVS.append("WANDB_API_KEY")
-    os.environ["WANDB_API_KEY"] = wandb_token
+    from megatron.neox_arguments import NeoXArgs
+    from megatron.utils import get_wandb_api_key
+
+    neox_args = NeoXArgs.consume_deepy_args(input_args)
+    deepspeed_main_args = neox_args.get_deepspeed_main_args()
+
+    # Extract wandb API key and inject into worker environments
+    wandb_token = get_wandb_api_key(neox_args=neox_args)
+    if wandb_token is not None:
+        deepspeed.launcher.runner.EXPORT_ENVS.append("WANDB_API_KEY")
+        os.environ["WANDB_API_KEY"] = wandb_token
+
+    deepspeed.launcher.runner.main(deepspeed_main_args)
+
 
 if __name__ == "__main__":
-    main(deepspeed_main_args)
+    main()

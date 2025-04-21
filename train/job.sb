@@ -1,16 +1,22 @@
 #!/bin/bash -l
-#SBATCH -J gpt
-#SBATCH -t 0:30:00
-#SBATCH -N 32
-#SBATCH -C nvme
+#SBATCH -J test
+#SBATCH -A stf218
+#SBATCH -t 01:30:00
+#SBATCH -N 1024
+##SBATCH -q debug
 #SBATCH --exclusive
-#SBATCH --ntasks-per-node=8
+##SBATCH --ntasks-per-node=8
 #SBATCH -o neox.o%j
 #SBATCH -e neox.e%j
 
-MODEL=forge-mat
+#MODEL=xforge/llama3-8b-1m
+MODEL="${@}"
+ulimit -n 65536
+module use /sw/aaims/crusher/modulefiles
+module load xforge
 
-source neox-env.sh 
+mkdir -p logs/$MODEL
+#rm -rf logs/$MODEL/checkpoints/
 
 echo "PATH=$PATH" > .deepspeed_env
 echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> .deepspeed_env
@@ -18,11 +24,22 @@ echo "CPATH=$CPATH" >> .deepspeed_env
 echo "CUDAPATH=${ROCM_PATH}" >> .deepspeed_env
 echo "TORCH_EXTENSIONS_DIR=$(pwd)/deepspeed" >> .deepspeed_env
 echo "NCCL_DEBUG=INFO" >> .deepspeed_env
-echo "FI_CXI_ATS=0" >> .deepspeed_env
 echo "NCCL_SOCKET_IFNAME=hsn" >> .deepspeed_env
 
+scontrol show hostnames $SLURM_NODELIST > logs/${MODEL}/hostfile
+input="logs/${MODEL}/hostfile"
+readarray -t arr <"$input"
+
+rm logs/${MODEL}/hostfile
+for row in "${arr[@]}";do
+  row_array=(${row})
+  hostname=${row_array[0]}
+
+  cmd="ssh ${hostname} ${ROCM_PATH}/bin/rocm-smi"
+  echo $cmd
+  #$cmd
+  echo "$hostname slots=8" >> logs/${MODEL}/hostfile
+done
+
 python -u ./deepy.py train.py -d configs ${MODEL}.yml frontier.yml
-
-
-
 

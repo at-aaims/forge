@@ -1,4 +1,4 @@
-# Copyright (c) 2021, EleutherAI
+# Copyright (c) 2024, EleutherAI
 # This file is based on code by the authors denoted below and has been modified from its original version.
 #
 # Copyright (c) Facebook, Inc. and its affiliates.
@@ -68,8 +68,6 @@ def make_dataset(path, impl, skip_warmup=False):
         return None
     if impl == "infer":
         impl = infer_dataset_impl(path)
-    if impl == "lazy" and IndexedDataset.exists(path):
-        return IndexedDataset(path)
     elif impl == "cached" and IndexedDataset.exists(path):
         return IndexedCachedDataset(path)
     elif impl == "mmap" and MMapIndexedDataset.exists(path):
@@ -101,8 +99,8 @@ dtypes = {
     3: np.int16,
     4: np.int32,
     5: np.int64,
-    6: np.float,
-    7: np.double,
+    6: np.float32,
+    7: np.float64,
     8: np.uint16,
 }
 
@@ -274,8 +272,8 @@ class IndexedDatasetBuilder(object):
         np.int16: 2,
         np.int32: 4,
         np.int64: 8,
-        np.float: 4,
-        np.double: 8,
+        np.float32: 4,
+        np.float64: 8,
     }
 
     def __init__(self, out_file, dtype=np.int32):

@@ -1,4 +1,4 @@
-# Copyright (c) 2021, EleutherAI
+# Copyright (c) 2024, EleutherAI
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,9 +21,10 @@ except ImportError:
     from template import NeoXArgsTemplate
 
 try:
-    from typing import Literal
+    from typing import List, Literal, Union, Optional, Any
 except ImportError:
-    from typing_extensions import Literal
+    from typing_extensions import List, Literal, Union, Optional
+
 
 ATTENTION_TYPE_CHOICES = [
     "global",
@@ -35,6 +36,9 @@ ATTENTION_TYPE_CHOICES = [
     "gmlp",
     "amlp",
     "flash",
+    "rwkv",
+    "mamba",
+    "ring",
 ]
 
 
@@ -43,7 +47,7 @@ def get_git_commit_hash():
     try:
         git_hash = subprocess.check_output(["git", "describe", "--always"]).strip()
         git_hash = git_hash.decode()
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, FileNotFoundError):
         git_hash = None
     return git_hash
 
@@ -64,6 +68,11 @@ class NeoXArgsParallelism(NeoXArgsTemplate):
     Size of the model parallelism.
     """
 
+    context_parallel_size: int = 1
+    """
+    Size of the context parallelism.
+    """
+
     pipe_partition_method: str = "type:transformer|mlp"
     """
     method used to distribute model layers across pipeline stages. Choose from "parameters", which balances the number
@@ -80,6 +89,23 @@ class NeoXArgsParallelism(NeoXArgsTemplate):
     """
     flag to determine whether pipeline parallelism is on - shouldn't be set by user, is automatically determined
     according to pipeline parallel size.
+    """
+
+    sequence_parallel: bool = False
+    """
+    flag to determine whether Megatron-style Sequence Parallelism (https://arxiv.org/abs/2205.05198)
+    (Layernorm inputs and activations are sharded across model parallel group) will be used. Has no effect when model_parallel_size is 1.
+    """
+
+    is_context_parallel: bool = False
+    """
+    flag to determine whether context parallelism is on - shouldn't be set by user, is automatically determined
+    according to context parallel size.
+    """
+
+    expert_interval: int = 2
+    """
+    Have one MoE layer every expert_interval layers
     """
 
 
@@ -104,9 +130,37 @@ class NeoXArgsModel(NeoXArgsTemplate):
     Transformer hidden size.
     """
 
+    intermediate_size: int = None
+    """
+    Transformer intermediate size. Default = 4h
+    """
+
+    mlp_multiple_of: int = 1
+    """
+    force mlp size to be a multiple of this value
+    """
+
+    expansion_factor: float = None
+    """
+    Transformer intermediate size. Default = 4
+    """
+
     num_attention_heads: int = None
     """
     Number of transformer attention heads.
+
+    If num_kv_heads is set, will control only number of query heads.
+    """
+
+    num_kv_heads: int = None
+    """
+    Number of transformer key/value attention heads.
+
+    If set to None or the same value as num_attention_heads, will perform multi-head attention (MHA).
+    If set to < num_attention_heads but > 1, will perform grouped-query attention (GQA) (https://arxiv.org/pdf/2305.13245.pdf)
+    If set to 1, will perform multi-query attention.
+
+    Must be < num_attention_heads and divide num_attention_heads evenly.
     """
 
     seq_length: int = None
@@ -114,14 +168,36 @@ class NeoXArgsModel(NeoXArgsTemplate):
     Maximum sequence length to process.
     """
 
+    sliding_window_width: int = None
+    """
+    Width of the attention sliding window. Only supported with Flash Attention 2.
+    """
+
     max_position_embeddings: int = None
     """
     Maximum number of position embeddings to use. This is the size of position embedding.
     """
 
-    norm: Literal["layernorm", "rmsnorm", "scalenorm"] = "layernorm"
+    norm: Literal[
+        "layernorm", "rmsnorm", "scalenorm", "te_rmsnorm", "te_layernorm"
+    ] = "layernorm"
     """
-    Normalization layer to use. Choose from "layernorm", "rmsnorm", "scalenorm".
+    Normalization layer to use. Choose from "layernorm", "rmsnorm", "scalenorm", "te_rmsnorm", "te_layernorm".
+    """
+
+    layernorm_fusion: bool = False
+    """
+    Use fused layer norm kernel (if `norm` is `layernorm`).
+    """
+
+    rmsnorm_fusion: bool = False
+    """
+    Use fused RMS norm kernel (if `norm` is `rmsnorm`).
+    """
+
+    use_qk_layernorm: bool = False
+    """
+    Use QK Normalization
     """
 
     layernorm_epsilon: float = 1.0e-5
@@ -174,7 +250,7 @@ class NeoXArgsModel(NeoXArgsTemplate):
     The first item in the list specifies the attention type(s), and should be a list of strings. The second item
     specifies the number of times to repeat those attention types in the full list.
 
-    attention type choices:  [global, local, sparse_fixed, sparse_variable, bslongformer, bigbird]
+    attention type choices:  [global, local, sparse_fixed, sparse_variable, bslongformer, bigbird, "gmlp", "amlp", "flash", "mamba", "rwkv", "ring"]
 
     So a 12 layer network with only global attention could be specified like:
         [[[`global`], 12]]
@@ -184,6 +260,12 @@ class NeoXArgsModel(NeoXArgsTemplate):
 
     If none is specified, this defaults to
         [[[`global`], n_layers]]
+    """
+
+    requires_attention_mask: bool = True
+    """
+    If true, the model requires an attention mask to be passed in.
+    Automatically configured based on attention type.
     """
 
     sparsity_config: dict = None
@@ -227,9 +309,26 @@ class NeoXArgsModel(NeoXArgsTemplate):
     Pad the vocab size to be divisible by this value. This is added for computational efficiency reasons.
     """
 
-    activation: Literal["gelu", "geglu", "relu", "softsign", "swish", "mish"] = "gelu"
+    activation: Literal[
+        "gelu",
+        "geglu",
+        "relu",
+        "softsign",
+        "swish",
+        "mish",
+        "silu",
+        "reglu",
+        "swiglu",
+        "bilinear",
+        "glu",
+    ] = "gelu"
     """
-    Activation function to use - choose from ["gelu", "geglu", "relu", "softsign", "swish", "mish"]
+    Activation function to use - choose from ["gelu", "geglu", "relu", "softsign", "swish", "mish", "silu", "reglu", "swiglu", "bilinear", "glu"]
+    """
+
+    use_flashattn_swiglu: bool = False
+    """
+    Use flash attention's version of swiglu
     """
 
     scaled_upper_triang_masked_softmax_fusion: bool = False
@@ -250,6 +349,11 @@ class NeoXArgsModel(NeoXArgsTemplate):
     bias_dropout_fusion: bool = False
     """
     Enable bias and dropout fusion.
+    """
+
+    rope_fusion: bool = False
+    """
+    Enable rotary embedding fusion.
     """
 
     fp16_lm_cross_entropy: bool = False
@@ -287,6 +391,15 @@ class NeoXArgsModel(NeoXArgsTemplate):
     Base for rotary positional embedding
     """
 
+    rotary_save_freqs_buffer: bool = False
+    """
+    Used to control whether the `inv_freqs` buffer in rotary embeddings
+    will be stored in checkpoints (persistent=True) or not.
+
+    Defaults to false, but is left configurable to maintain backward-compatibility
+    with GPT-NeoX checkpoints that were trained with this flag.
+    """
+
     init_method: Literal[
         "normal",
         "scaled_normal",
@@ -296,6 +409,7 @@ class NeoXArgsModel(NeoXArgsTemplate):
         "xavier_normal",
         "wang_init",
         "small_init",
+        "single_residual_scaled_normal",
     ] = "normal"
     """
     Init function used on all layers except ff residual outputs - choose from
@@ -311,6 +425,7 @@ class NeoXArgsModel(NeoXArgsTemplate):
         "xavier_normal",
         "wang_init",
         "small_init",
+        "single_residual_scaled_normal",
     ] = "scaled_normal"
     """
     Init function used for ff residual outputs - choose from
@@ -342,6 +457,19 @@ class NeoXArgsModel(NeoXArgsTemplate):
       x = x + attn(y) + mlp(y)
     """
 
+    use_bias_in_norms: bool = True
+    """
+    If false, norms (e.g. LayerNorm) will not have bias terms
+    """
+    use_bias_in_attn_linear: bool = True
+    """
+    If false, attn_linear (e.g. QKVO) will not have bias terms
+    """
+    use_bias_in_mlp: bool = True
+    """
+    If false, mlps will not have bias terms
+    """
+
     soft_prompt_tuning: dict = None
     """
     Dictionary configuring the soft prompt tuning parameters.
@@ -353,10 +481,133 @@ class NeoXArgsModel(NeoXArgsTemplate):
         'init_range': float = 0.5 # if no init string is provided, initialize the soft prompt with a uniform distribution between -init_range and init_rang
     """
 
-    output_layer_parallelism: Literal["row", "column"] = "row"
+    mamba_selective_scan_fusion: bool = False
+    """
+    Enable fused kernels for Mamba selective scan.
+    """
+
+    mamba_causal_conv_fusion: bool = False
+    """
+    Enable fused kernels for Mamba causal Conv1d.
+    """
+
+    mamba_inner_func_fusion: bool = False
+    """
+    Enable fused inner operator for Mamba. (Supersedes conv. and selective scan fusion flags, requires each of those kernels to be installed.)
+    """
+
+    mamba_selective_fp32_params: bool = True
+    """
+    Keep selected parameters in fp32 for Mamba (A and D).
+    Requires https://github.com/EleutherAI/DeeperSpeed/pull/61 .
+    """
+
+    mamba_use_bias_in_conv: bool = True
+    """
+    If false, conv1d in mamba block will not have bias term
+    """
+
+    mamba_use_bias_in_linears: bool = False
+    """
+    Enable bias terms in mamba block up- and down- projections (in_proj and out_proj).
+    """
+
+    # Output layer parallelism over the hidden dim is currently broken (https://github.com/EleutherAI/gpt-neox/issues/905)
+    output_layer_parallelism: Literal["column"] = "column"
 
     """
     Parameter controlling whether the output layer is parallelized over the hidden dim (row) or the vocab dim (column)
+    """
+
+    serve_model_weights: bool = False
+    """
+    If true, serve model weight pointers over a socket connection
+    """
+
+    weight_server_port: Union[int, List[int]] = 6000
+    """
+    Port(s) to serve model weights over
+    If an integer is provided, the port for each GPU will be 6000 + global rank
+    If a list is provided, the ports will be used in order, e.g. rank0 will be weight_server_port[0]
+    """
+
+    online_dataserver_ips: Union[str, List[str]] = "localhost"
+    """
+    ip addresses to connect to for online data serving, defaults to localhost
+    """
+
+    online_dataserver_ports: Union[int, List[int]] = 10000
+    """
+    Port(s) to connect to for online data serving, defaults to 10000
+    """
+
+    te_columnparallel: bool = False
+    """
+    Use TransformerEngine for RowParallelLinear layer.
+    """
+
+    te_rowparallel: bool = False
+    """
+    Use TransformerEngine for ColumnParallelLinear layer.
+    """
+
+    te_layernorm_mlp: bool = False
+    """
+    Use TransformerEngine for LayerNormMLP layer.
+    """
+
+    te_mha: bool = False
+    """
+    Use TransformerEngine for MultiheadAttention layer.
+    """
+
+    te_fp8_format: Literal["e4m3", "hybrid"] = "hybrid"
+    """
+    Controls the FP8 data format used during forward and backward pass by TransformerEngine.
+    Hybrid uses E4M3 during forward pass, E5M2 during backward pass.
+    """
+
+    te_fp8_wgrad: bool = True
+    """
+    When set to False, override FP8 config options and do the wgrad computation
+    in higher precision.
+    """
+
+    te_fp8_amax_history_len: int = 1
+    """
+    The length of the amax history window used for scaling factor computation.
+    """
+
+    te_fp8_amax_compute_algo: str = "most_recent"
+    """
+    Algorithm used for choosing the `amax` value for the scaling factor computation. There are 2
+    predefined choices: `max` chooses the largest `amax` in the history window, while `most_recent`
+    always chooses the most recently seen value.
+    """
+
+    te_fp8_margin: int = 0
+    """
+    Margin for the scaling factor computation.
+    """
+
+    te_fp8_mha: bool = False
+    """
+    When set to True, use the FP8 implementation of Multi Head Attention.
+    """
+
+    dim_att: int = None
+    """
+    Total dimension of the attention mechanism for RWKV. If not set, defaults to hidden_size.
+    """
+
+    head_size: int = None
+    """
+    Size of each attention head for RWKV. Calculated as dim_att // num_attention_heads.
+    """
+
+    ffn_dim: int = None
+    """
+    Dimension of the feed-forward network for RWKV. If not set, calculated based on hidden_size and expansion_factor.
     """
 
 
@@ -367,10 +618,19 @@ class NeoXArgsOptimizer(NeoXArgsTemplate):
     """
 
     optimizer_type: Literal[
-        "lamb", "adam", "onebitadam", "cpu_adam", "cpu_torch_adam", "sm3", "madgrad_wd"
+        "lamb",
+        "adam",
+        "onebitadam",
+        "cpu_adam",
+        "cpu_torch_adam",
+        "sm3",
+        "madgrad_wd",
+        "sgd",
+        "lion",
     ] = "adam"
     """
-    Type of optimizer to use. Choose from ['adam', 'onebitadam', 'cpu_adam', 'cpu_torch_adam', 'sm3', 'madgrad_wd]
+    Type of optimizer to use. Choose from ['adam', 'onebitadam', 'cpu_adam', 'cpu_torch_adam', 'sm3', 'madgrad_wd', 'sgd', 'lion']
+    NOTE: sgd will use MuSGD from Mup. Mup must be enabled for this optimizer.
     """
 
     use_bnb_optimizer: bool = False
@@ -378,7 +638,7 @@ class NeoXArgsOptimizer(NeoXArgsTemplate):
     Whether to enable the bitsandbytes optimizers
     """
 
-    zero_stage: int = None
+    zero_stage: Union[int, List[int], Literal["all"]] = None
     """
     Zero Optimizer stage
     """
@@ -422,7 +682,13 @@ class NeoXArgsLRScheduler(NeoXArgsTemplate):
 
     lr_decay_iters: int = None
     """
-    Number of iterations to decay learning rate over, If None defaults to --train-iters
+    Number of iterations to decay learning rate over, If None defaults to
+    --train-iters or the equivalent inferred valued from train_epochs.
+    """
+
+    lr_decay_fraction: float = None
+    """
+    Effective fraction of training over which to decay lr, overrides lr_decay_iters, useful when specifying train_epochs
     """
 
     min_lr: float = 0.0
@@ -452,11 +718,15 @@ class NeoXArgsLogging(NeoXArgsTemplate):
     Logging Arguments
     """
 
+    ### BEGIN WANDB ARGS ###
     use_wandb: bool = None
     """Flag indicating if wandb is to be used."""
 
     wandb_group: str = None
     """Weights and Biases group name - used to group together "runs"."""
+
+    wandb_run_name: str = None
+    """Weights and Biases run name for the current experiment"""
 
     wandb_team: str = None
     """Team name for Weights and Biases."""
@@ -469,6 +739,7 @@ class NeoXArgsLogging(NeoXArgsTemplate):
 
     wandb_init_all_ranks: bool = False
     """Initialize wandb on all ranks."""
+    ### END WANDB ARGS ###
 
     git_hash: str = get_git_commit_hash()
     """current git hash of repository"""
@@ -478,6 +749,7 @@ class NeoXArgsLogging(NeoXArgsTemplate):
     Directory to save logs to.
     """
 
+    ### BEGIN TENSORBOARD ARGS ###
     tensorboard_writer = None
     """
     initialized tensorboard writer
@@ -487,8 +759,49 @@ class NeoXArgsLogging(NeoXArgsTemplate):
     """
     Write TensorBoard logs to this directory.
     """
+    ### END TENSORBOARD ARGS ###
 
-    log_interval: int = None
+    ### BEGIN COMET ARGS ###
+    use_comet: bool = None
+    """Flag indicating if comet is to be used."""
+
+    comet_workspace: Optional[str] = None
+    """
+    Comet workspace name, if not configured Comet Experiments will be created in the user configured default workspace.
+    """
+
+    comet_project: Optional[str] = None
+    """
+    Comet project name, if not configured Comet Experiments will be created in the Uncategorized Experiments project.
+    """
+
+    comet_experiment_name: Optional[str] = None
+    """
+    Custom name for the Comet experiment. If not provided, a random name is used.
+    """
+
+    comet_tags: Optional[list] = None
+    """
+    List of tags to attach to the created Comet Experiment.
+    """
+
+    comet_others: Optional[dict] = None
+    """
+    Custom metadata to attach to the created Comet Experiment.
+    """
+
+    comet_experiment: Any = None
+    """
+    Initialized comet experiment object used to log data
+    """
+    ### END COMET ARGS ###
+
+    peak_theoretical_tflops: float = None
+    """
+    The peak hardware flops with which to compute MFU and HFU, in units of teraflops. Automatic detection is more trouble than it's worth, so this is left to the user. Helpful table listed at https://github.com/stas00/ml-engineering/tree/master/compute/accelerator#tflops-comparison-table
+    """
+
+    log_interval: int = 100
     """
     Interval between logging.
     """
@@ -506,8 +819,7 @@ class NeoXArgsLogging(NeoXArgsTemplate):
     log_grad_norm: bool = False
     """
     Log the frob norm of the gradients to wandb / tensorboard (useful for debugging).
-    (N.B - this will only work with pp = 0 for now, as we don't have access to the gradients of the model because
-    deepspeed.)
+    (N.B - this will only work with pp = 0 for now, as we don't have access to the gradients of the model because deepspeed.)
     """
 
     log_optimizer_states: bool = False
@@ -529,6 +841,41 @@ class NeoXArgsLogging(NeoXArgsTemplate):
     """
     Whether to offload the buffered gradients to cpu when measuring gradient noise scale.
     """
+
+    ### BEGIN PROFILING ARGS
+    memory_profiling: bool = False
+    """
+    Whether to take a memory snapshot of the model. Useful for debugging memory issues.
+    """
+
+    memory_profiling_path: str = None
+    """
+    Path to save memory snapshot to.
+    """
+
+    profile: bool = False
+    """
+    Enable nsys and pytorch profiling. When using this option with nsys,
+    nsys options should be directly specified in commandline.
+    An example nsys commandline is
+    ```
+    nsys profile -s none -t nvtx,cuda -o <path/to/output_file>
+    --force-overwrite true
+    --capture-range=cudaProfilerApi
+    --capture-range-end=stop
+    ```
+    """
+
+    profile_step_start: int = 10
+    """
+    Step to start profiling at.
+    """
+
+    profile_step_stop: int = 12
+    """
+    Step to stop profiling at.
+    """
+    ### END PROFILING ARGS ###
 
 
 @dataclass
@@ -620,22 +967,17 @@ class NeoXArgsOther(NeoXArgsTemplate):
     Set during training
     """
 
-    do_train: int = None
+    do_train: bool = None
     """
     Set during training
     """
 
-    do_valid: int = None
+    do_valid: bool = None
     """
     Set during training
     """
 
-    do_test: int = None
-    """
-    Set during training
-    """
-
-    save_iters: list = 100
+    do_test: bool = None
     """
     Set during training
     """
@@ -698,14 +1040,80 @@ class NeoXArgsTraining(NeoXArgsTemplate):
     List of paths to train datasets.
     """
 
+    train_label_data_paths: list = None
+    """
+    List of paths to train label datasets (not shifted by 1 yet!).
+    """
+
+    train_reward_data_paths: list = None
+    """
+    List of paths to train reward datasets
+    """
+
     test_data_paths: list = None
     """
     List of paths to test datasets.
     """
 
+    test_label_data_paths: list = None
+    """
+    List of paths to test label datasets (not shifted by 1 yet!).
+    """
+
+    test_reward_data_paths: list = None
+    """
+    List of paths to test reward datasets
+    """
+
     valid_data_paths: list = None
     """
     List of paths to validation datasets.
+    """
+
+    valid_label_data_paths: list = None
+    """
+    List of paths to validation label datasets (not shifted by 1 yet!).
+    """
+
+    valid_reward_data_paths: list = None
+    """
+    List of paths to validation reward datasets
+    """
+
+    pos_train_data_paths: list = None
+    neg_train_data_paths: list = None
+    """
+    List of paths to positive and negative training datasets.
+    """
+
+    pos_train_label_data_paths: list = None
+    neg_train_label_data_paths: list = None
+    """
+    List of paths to positive and negative training label datasets (not shifted by 1 yet!).
+    """
+
+    pos_valid_data_paths: list = None
+    neg_valid_data_paths: list = None
+    """
+    List of paths to positive and negative validation datasets.
+    """
+
+    pos_valid_label_data_paths: list = None
+    neg_valid_label_data_paths: list = None
+    """
+    List of paths to positive and negative validation label datasets (not shifted by 1 yet!).
+    """
+
+    pos_test_data_paths: list = None
+    neg_test_data_paths: list = None
+    """
+    List of paths to positive and negative test datasets.
+    """
+
+    pos_test_label_data_paths: list = None
+    neg_test_label_data_paths: list = None
+    """
+    List of paths to positive and negative test label datasets (not shifted by 1 yet!).
     """
 
     train_data_weights: list = None
@@ -743,7 +1151,7 @@ class NeoXArgsTraining(NeoXArgsTemplate):
     See https://arxiv.org/abs/1911.02116 for more details
     """
 
-    weighted_sampler_alpha: float = 0.3
+    weighted_sampler_alpha: float = 1.0
     """
     Alpha value for `weight_by_num_documents`. Only has an effect if `weight_by_num_documents` = True.
 
@@ -752,9 +1160,97 @@ class NeoXArgsTraining(NeoXArgsTemplate):
     as alpha -> inf, the probability of sampling from the groups with *the most samples* -> 1
     """
 
-    data_impl: str = "infer"
+    data_impl: Literal["infer", "mmap", "cached"] = "infer"
     """
-    Implementation of indexed datasets.
+    Implementation of indexed datasets, can be one of "infer", "cached", or "mmap"
+    """
+
+    pack_impl: Literal["packed", "pack_until_overflow", "unpacked"] = "packed"
+    """
+    Packing implementation, can be one of "packed", "pack_until_overflow", or "unpacked".
+
+    warning: pack_until_overflow is very naive and will likely have issues with pretraining scale datasets
+    """
+
+    dataset_impl: Literal["gpt2", "pairwise", "online"] = "gpt2"
+    """
+    Dataset implementation, can be one of "gpt2", "pairwise", or "online"
+    """
+
+    train_impl: Literal["normal", "dpo", "rm", "kto", "reinforce"] = "normal"
+    """
+    Training implementation, can be one of "normal", "dpo", "kto", "reinforce", or "rm"
+    """
+
+    dpo_fp32: bool = True
+    """
+    Whether to cast logits to fp32 for DPO loss calculation.
+    """
+
+    dpo_reference_free: bool = False
+    """
+    Whether to use reference-free DPO.
+    """
+
+    dpo_beta: float = 0.1
+    """
+    Beta value for DPO
+    """
+
+    kto_fp32: bool = True
+    """
+    Whether to cast logits to fp32 for KTO loss calculation.
+    """
+
+    kto_desirable_weight: float = 1.0
+    """
+    Weight for desirable loss in KTO. Might help if you have unbalanced desirable and undesirable classes.
+    """
+
+    kto_undesirable_weight: float = 1.0
+    """
+    Weight for undesirable loss in KTO. Might help if you have unbalanced desirable and undesirable classes.
+    """
+
+    z_loss: float = 0.0
+    """
+    Z-loss parameter, only implemented for RM training currently.
+    https://arxiv.org/pdf/2204.02311
+    https://arxiv.org/pdf/2309.10305
+    """
+
+    kto_beta: float = 0.1
+    """
+    Beta value for KTO
+    """
+
+    fp32_reinforce: bool = True
+    """
+    Whether to cast logits to fp32 for Reinforce loss calculation.
+    """
+
+    kl_impl: Literal["abs", "mse", "kl", "full"] = "mse"
+    """
+    KL divergence implementation, can be one of "abs", "mse", "kl", or "full"
+    """
+
+    kl_div_beta: float = 0.1
+    """
+    Beta value for KL divergence in Reinforce loss calculation.
+    """
+
+    reinforce_leave_one_out: bool = False
+    """
+    Whether to use reinforce leave one out for training
+    (from https://arxiv.org/abs/2402.14740 and https://api.semanticscholar.org/CorpusID:198489118)
+    """
+
+    allow_chopped: bool = True
+    """
+    WARNING: if your packing impl is packed, this is ignored.
+
+    Allow chopped samples in the dataset.
+    (e.g if your sequence length is 1024 and you have a sample of length 1026, it will be chopped to 1024)
     """
 
     mmap_warmup: bool = False
@@ -765,6 +1261,16 @@ class NeoXArgsTraining(NeoXArgsTemplate):
     save: str = None
     """
     Output directory to save checkpoints to.
+    """
+
+    s3_path: str = None
+    """
+    Path to s3 bucket for saving checkpoints.
+    """
+
+    s3_chunk_size: int = 104_857_600
+    """
+    The number of bytes in each file chunk when uploading to s3. Defaults to 100MiB.
     """
 
     config_files: dict = None
@@ -788,7 +1294,7 @@ class NeoXArgsTraining(NeoXArgsTemplate):
     while "log" implies that the number of steps between each checkpoint will be multiplied by `checkpoint-factor` at each step, starting from step 1.
     """
 
-    checkpoint_factor: int = None
+    checkpoint_factor: Union[int, float] = None
     """
     Acts as a multiplier on either the "log" or "linear" checkpoint spacing.
 
@@ -842,6 +1348,12 @@ class NeoXArgsTraining(NeoXArgsTemplate):
     Number of iterations to run for training.
     """
 
+    train_epochs: int = None
+    """
+    Number of epochs to run for training. Do not specify both train_epochs and train_iters.
+    Not currently compatible with data reweighing, pairwise datasets, and packing other than 'packed'
+    """
+
     eval_iters: int = 100
     """
     Number of iterations to run for evaluation validation/test for.
@@ -882,17 +1394,17 @@ class NeoXArgsTraining(NeoXArgsTemplate):
     Exit the program after the iteration is divisible by this value.
     """
 
-    attention_dropout: float = 0.1
+    attention_dropout: float = 0.0
     """
     Post attention dropout probability.
     """
 
-    hidden_dropout: float = 0.1
+    hidden_dropout: float = 0.0
     """
     Dropout probability for hidden state transformer.
     """
 
-    weight_decay: float = 0.01
+    weight_decay: float = 0.1
     """
     Weight decay coefficient for L2 regularization.
     """
@@ -938,10 +1450,7 @@ class NeoXArgsTraining(NeoXArgsTemplate):
     Partition Activations across GPUs before checkpointing.
     """
 
-    gas: int = None
-    """gradient_accumulation_steps"""  # TODO this is a duplicate, remove?
-
-    clip_grad: float = None
+    clip_grad: float = 1.0
     """
     Gradient clipping based on global L2 norm.
     """
@@ -977,6 +1486,57 @@ class NeoXArgsTraining(NeoXArgsTemplate):
     Whether to calculate character level perplexity as well as token level perplexity. (may incur a time cost)
     """
 
+    use_mup: bool = False
+    """
+    Whether to use Microsoft's Mup https://github.com/microsoft/mup
+    """
+
+    coord_check: bool = False
+    """
+    Whether to generate a "coord check" plot to verify mup's implementation in neox
+    """
+
+    save_base_shapes: bool = False
+    """
+    Whether to save base shapes for mup. This will save the shapes to the path specified in base-shapes-file.
+    """
+
+    base_shapes_file: str = None
+    """
+    Path to the base shapes to save to/load from
+    """
+
+    mup_init_scale: float = 1.0
+    """
+    Initialization scale: All the parameters are multiplied by this value
+    """
+
+    mup_attn_temp: float = 1.0
+    """
+    Attention temperature: Reciprocal of the multiplier applied to the input to attention softmax
+    """
+
+    mup_output_temp: float = 1.0
+    """
+    Output temperature: Reciprocal of the multiplier applied to the input to softmax that
+    produces the distribution over output tokens.
+    """
+
+    mup_embedding_mult: float = 1.0
+    """
+    Scalar by which we multiply the output of the embedding layer
+    """
+
+    mup_rp_embedding_mult: float = 1.0
+    """
+    Scalar by which we multiply vectors representing relative position
+    """
+
+    mup_width_scale: int = 2
+    """
+    What to scale width by when creating the delta model for mup
+    """
+
 
 @dataclass
 class NeoXArgsTextgen(NeoXArgsTemplate):
@@ -987,7 +1547,12 @@ class NeoXArgsTextgen(NeoXArgsTemplate):
     text_gen_type: str = None
     """
     How to generate text/sample the model.
-    Options: `unconditional`, `input-file`, `interactive`
+    Options: `unconditional`, `input-file`, `interactive`, `precompute`
+    """
+
+    precompute_model_name: str = None
+    """
+    Model name to use for saving precomputed logprobs
     """
 
     temperature: float = 0.0
@@ -1049,4 +1614,87 @@ class NeoXArgsTextgen(NeoXArgsTemplate):
     eval_tasks: list = None
     """
     Tasks to evaluate on using lm_eval_harness
+
+    NOTE: Requires internet connection
+    """
+
+    moe_top_k: int = 1
+    """
+    Activate top K experts in MoE
+    """
+
+    use_tutel: bool = False
+    """
+    Use Tutel optimizations in MoE
+    """
+
+    moe_num_experts: int = 1
+    """
+    Number of MoE experts
+    """
+
+    moe_loss_coeff: float = 0.1
+    """
+    Coefficient for MoE loss
+    """
+
+    moe_train_capacity_factor: float = 1.0
+    """
+    The capacity of the expert at train time
+    """
+
+    moe_eval_capacity_factor: float = 1.0
+    """
+    The capacity of the expert at eval time
+    """
+
+    moe_min_capacity: int = 4
+    """
+    The minimum capacity per expert regardless of the capacity_factor
+    """
+
+    moe_token_dropping: bool = False
+    """
+    Whether to drop tokens when exceeding capacity
+    """
+
+    create_moe_param_group: bool = True
+    """
+    Whether to create a separate parameter group for MoE parameters
+    """
+
+    moe_use_residual: bool = True
+    """
+    Whether to use residual in MoE
+    """
+
+    moe_expert_parallel_size: int = 1
+    """
+    Number of parallel experts in MoE
+    """
+
+    moe_type: str = "megablocks"
+    """
+    Either `deepspeed` or `megablocks`
+    """
+
+    moe_glu: bool = False
+    """
+    Use gated linear units in MoE
+    """
+
+    moe_lbl_in_fp32: bool = False
+    """
+    Whether to compute the load balancing loss in fp32.
+    """
+
+    moe_jitter_eps: float = None
+    """
+    Coefficient for MoE routing jitter. Jitter is
+    not used if set to None
+    """
+
+    enable_expert_tensor_parallelism: bool = False
+    """
+    Enable expert tensor parallelism
     """

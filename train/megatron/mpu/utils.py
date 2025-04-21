@@ -1,7 +1,7 @@
-# Copyright (c) 2021, EleutherAI
+# Copyright (c) 2024, EleutherAI
 # This file is based on code by the authors denoted below and has been modified from its original version.
 #
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,6 +46,28 @@ def split_tensor_along_last_dim(tensor, num_partitions, contiguous_split_chunks=
     last_dim_size = divide(tensor.size()[last_dim], num_partitions)
     # Split.
     tensor_list = torch.split(tensor, last_dim_size, dim=last_dim)
+    # Note: torch.split does not create contiguous tensors by default.
+    if contiguous_split_chunks:
+        return tuple(chunk.contiguous() for chunk in tensor_list)
+
+    return tensor_list
+
+
+def split_tensor_along_any_dim(
+    tensor, num_partitions, seq_dim, contiguous_split_chunks=False
+):
+    """Split a tensor along a user-specified dimension.
+    Arguments:
+        tensor: input tensor.
+        num_partitions: number of partitions to split the tensor
+        seq_dim: dimension along which to split the tensor
+        contiguous_split_chunks: If True, make each chunk contiguous
+                                 in memory.
+    """
+    # Get the size and dimension.
+    seq_dim_size = divide(tensor.size()[seq_dim], num_partitions)
+    # Split.
+    tensor_list = torch.split(tensor, seq_dim_size, dim=seq_dim)
     # Note: torch.split does not create contiguous tensors by default.
     if contiguous_split_chunks:
         return tuple(chunk.contiguous() for chunk in tensor_list)

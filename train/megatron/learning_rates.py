@@ -1,7 +1,7 @@
-# Copyright (c) 2021, EleutherAI
+# Copyright (c) 2024, EleutherAI
 # This file is based on code by the authors denoted below and has been modified from its original version.
 #
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,6 +36,7 @@ class AnnealingLR(object):
         min_lr=0.0,
         use_checkpoint_lr_scheduler=True,
         override_lr_scheduler=False,
+        use_mup=False,
     ):
 
         # Class values.
@@ -49,6 +50,7 @@ class AnnealingLR(object):
         self.decay_style = decay_style
         self.override_lr_scheduler = override_lr_scheduler
         self.use_checkpoint_lr_scheduler = use_checkpoint_lr_scheduler
+        self.use_mup = use_mup
         if self.override_lr_scheduler:
             assert not self.use_checkpoint_lr_scheduler, (
                 "both override and " "use-checkpoint are set."
@@ -62,23 +64,26 @@ class AnnealingLR(object):
         """Learning rate decay functions from:
         https://openreview.net/pdf?id=BJYwwY9ll pg. 4"""
 
-        num_iters_ = min(self.num_iters, self.end_iter - self.warmup_iter)
+        num_iters_ = self.num_iters
         # Warmup.
         if self.warmup_iter > 0 and self.num_iters <= self.warmup_iter:
             return float(self.start_lr) * num_iters_ / self.warmup_iter
 
         num_iters_ = num_iters_ - self.warmup_iter
         if self.decay_style == "linear":
-            lr = self.start_lr * (self.end_iter - num_iters_) / self.end_iter
+            end_iter_ = self.end_iter - self.warmup_iter
+            lr = self.start_lr * (end_iter_ - num_iters_) / end_iter_
         elif self.decay_style == "cosine":
-            lr = (
-                self.start_lr
+            end_iter_ = self.end_iter - self.warmup_iter
+            lr = self.min_lr + (
+                (self.start_lr - self.min_lr)
                 / 2.0
-                * (math.cos(math.pi * num_iters_ / self.end_iter) + 1)
+                * (math.cos(math.pi * num_iters_ / end_iter_) + 1)
             )
         elif self.decay_style == "exponential":
             # exp(-0.693) = 1/2
-            lr = self.start_lr * math.exp(-0.693 * num_iters_ / self.end_iter)
+            end_iter = self.end_iter - self.warmup_iter
+            lr = self.start_lr * math.exp(-0.693 * num_iters_ / end_iter)
         else:
             lr = self.start_lr
         return max(lr, self.min_lr)
@@ -90,7 +95,10 @@ class AnnealingLR(object):
         self.num_iters = step_num
         new_lr = self.get_lr()
         for group in self.optimizer.param_groups:
-            group["lr"] = new_lr
+            if self.use_mup and "width_mult" in group:
+                group["lr"] = new_lr / group["width_mult"]
+            else:
+                group["lr"] = new_lr
 
     def state_dict(self):
         state_dict = {

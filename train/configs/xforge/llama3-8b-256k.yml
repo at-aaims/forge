@@ -1,0 +1,116 @@
+{
+  "tokenizer_type": "HFTokenizer",
+  "data-path": "/lustre/orion/scratch/junqi/stf218/xforge/data/redpajama-books/tokens/rpbook_text_document",
+  "vocab-file": "/lustre/orion/scratch/junqi/stf218/xforge/data/redpajama-books/rpbook_vocab.json",
+  #"use_shared_fs": false,
+  "tensorboard_dir": "logs/xforge/llama3-8b-256k/tensorboard",
+  "hostfile": "logs/xforge/llama3-8b-256k/hostfile",
+  "save": "logs/xforge/llama3-8b-256k/checkpoints",
+  "load": "logs/xforge/llama3-8b-256k/checkpoints",
+  "pipe_parallel_size": 0,
+  "model_parallel_size": 1,
+  "make_vocab_size_divisible_by": 1,
+  "context_parallel_size": 32,
+  #"num_workers": 0,
+
+  "attention_config": [[["ring"], 32]],
+  # model settings
+  "num_layers": 32,
+  "hidden_size": 4096,
+  "num_attention_heads": 32,
+  "num_kv_heads": 8,
+  # llama3 supports more than this but this is just for testing.
+  "seq_length": 262144,
+  "max_position_embeddings": 262144,
+  "pos_emb": "rotary",
+  "rotary_pct": 1,
+  "rotary_emb_base": 500000,
+  "rope_fusion": false,
+  "no_weight_tying": true,
+  "gpt_j_residual": false,
+  "output_layer_parallelism": "column",
+  "norm": "rmsnorm",
+  "rms_norm_epsilon": 1.0e-5,
+
+  "scaled_upper_triang_masked_softmax_fusion": false,
+  "bias_gelu_fusion": false,
+  "use_bias_in_norms": false,
+  "use_bias_in_attn_linear": false,
+  "use_bias_in_mlp": false,
+  #"use_flashattn_swiglu": true,
+  "activation": "swiglu",
+  "intermediate_size": 14336,
+  "mlp_multiple_of": 14336,
+
+   # init methods
+   "init_method": "small_init",
+   "output_layer_init_method": "wang_init",
+
+   # optimizer settings
+   "optimizer": {
+     #"type": "AdamW",
+     "type": "Adam",
+     "params": {
+       "lr": 0.0003,
+       #"lr": 3e-4,
+       "betas": [0.9, 0.95],
+       "eps": 1.0e-8,
+     }
+   },
+   "min_lr": 0.00003,
+
+   # for all zero_optimization options, see https://www.deepspeed.ai/docs/config-json/#zero-optimizations-for-fp16-training
+   "zero_optimization": {
+    "stage": 2,
+    "allgather_partitions": True,
+    "allgather_bucket_size": 500000000,
+    "overlap_comm": True,
+    "reduce_scatter": True,
+    "reduce_bucket_size": 500000000,
+    "contiguous_gradients": True,
+  },
+
+   # batch / data settings
+   "train_micro_batch_size_per_gpu": 1,
+   "data_impl": "mmap",
+
+   # activation checkpointing
+   "checkpoint_activations": true,
+   "checkpoint_num_layers": 1,
+   "partition_activations": true,
+   "synchronize_each_layer": true,
+
+   # regularization
+   "gradient_clipping": 1.0,
+   "weight_decay": 0.1,
+   "hidden_dropout": 0,
+   "attention_dropout": 0,
+
+   # precision settings
+   "bf16": {
+     "bf16": true,
+     "enabled": true,
+     "loss_scale": 0,
+     "loss_scale_window": 1000,
+     "hysteresis": 2,
+     "min_loss_scale": 1
+   },
+
+   # misc. training settings
+   "train_iters": 10,
+   "lr_decay_iters": 40000,
+   "distributed_backend": "nccl",
+   "lr_decay_style": "cosine",
+   "warmup": 0.05,
+   "checkpoint_factor": 50,
+   "eval_interval": 100,
+   "eval_iters": 10,
+
+   # logging
+   "log_interval": 1,
+   "steps_per_print": 1,
+   "keep_last_n_checkpoints": 4,
+   "wall_clock_breakdown": true,
+
+
+}
