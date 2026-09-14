@@ -55,7 +55,6 @@ from megatron.utils import (
     CharCounter,
 )
 from megatron.model.gpt2_model import cross_entropy
-from eval_tasks import run_eval_harness
 
 
 def pretrain(neox_args):
@@ -441,7 +440,6 @@ def setup_model_and_optimizer(neox_args, use_cache=False, iteration=None):
             lr_scheduler=_lr_scheduler,
             dist_init_required=False,
             model_parameters=_model_params,
-            config_params=neox_args.deepspeed_config,
             mpu=mpu if not neox_args.is_pipe_parallel else None,
         )
         model.total_params = get_total_params(model.module)
@@ -756,6 +754,11 @@ def evaluate(
         )
 
     if neox_args.eval_tasks:
+        # Imported here rather than at module level: eval_tasks.eval_adapter imports
+        # `forward_step` from this module, which isn't defined yet when this module's
+        # own top-level imports run, causing a circular ImportError.
+        from eval_tasks import run_eval_harness
+
         eval_results.update(
             run_eval_harness(
                 model, forward_step_fn, neox_args, eval_tasks=neox_args.eval_tasks

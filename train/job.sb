@@ -1,28 +1,65 @@
 #!/bin/bash -l
-#SBATCH -J gpt
-#SBATCH -t 0:30:00
-#SBATCH -N 32
-#SBATCH -C nvme
+#SBATCH -J forge
+#SBATCH -A stf218
+#SBATCH -t 0:45:00
+#SBATCH -N 128
+##SBATCH -C nvme
+##SBATCH -q debug
 #SBATCH --exclusive
 #SBATCH --ntasks-per-node=8
+#SBATCH --gpus-per-node=8
 #SBATCH -o neox.o%j
 #SBATCH -e neox.e%j
 
-MODEL=forge-mat
+MODEL=${MODEL:-forge-l}
+mkdir -p logs/$MODEL
 
-source neox-env.sh 
+source /lustre/orion/world-shared/stf218/junqi/lux/lux_env.sh
 
+export TORCH_BLAS_PREFER_HIPBLASLT=0
+
+#export NCCL_DEBUG=INFO
+export NCCL_SOCKET_IFNAME=bond0                # mgmt NIC for NCCL's TCP bootstrap, not the RoCE data rails
+export NCCL_IB_HCA="ionic_0,ionic_1,ionic_2,ionic_3,ionic_4,ionic_5,ionic_6,ionic_7"
+export NCCL_IB_GID_INDEX=1                     # RoCEv2 GID table entry on this fabric (index 0 is RoCEv1/IB)
+export NCCL_GDR_FLUSH_DISABLE=1                # skip the extra PCIe read flush for GDR writes; relies on HW ordering
+export RCCL_GDR_FLUSH_GPU_MEM_NO_RELAXED_ORDERING=0
+export NCCL_GDRCOPY_ENABLE=0
+export NCCL_IB_PCI_RELAXED_ORDERING=1
+export NCCL_IB_QPS_PER_CONNECTION=1            # 4 QPs regressed bw 7-10% in HPE's job 6388; keep at 1
+export HSA_NO_SCRATCH_RECLAIM=1
+export NCCL_IB_TC=104                          # lossless RoCE traffic class this fabric is configured for
+export NCCL_IGNORE_CPU_AFFINITY=1
+export NCCL_PXN_DISABLE=0
+export NCCL_DMABUF_ENABLE=1
+export NCCL_IB_USE_INLINE=1
+export IONIC_LOCKFREE=all
+export RCCL_AINIC_ROCE=1
+export LD_PRELOAD=/usr/lib64/libionic.so.1
+
+export TORCH_EXTENSIONS_DIR=$(pwd)/deepspeed
+export CUDAPATH=${ROCM_PATH}
 echo "PATH=$PATH" > .deepspeed_env
 echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> .deepspeed_env
 echo "CPATH=$CPATH" >> .deepspeed_env
-echo "CUDAPATH=${ROCM_PATH}" >> .deepspeed_env
-echo "TORCH_EXTENSIONS_DIR=$(pwd)/deepspeed" >> .deepspeed_env
-echo "NCCL_DEBUG=INFO" >> .deepspeed_env
-echo "FI_CXI_ATS=0" >> .deepspeed_env
-echo "NCCL_SOCKET_IFNAME=hsn" >> .deepspeed_env
 
-python -u ./deepy.py train.py -d configs ${MODEL}.yml frontier.yml
+scontrol show hostnames $SLURM_NODELIST > logs/${MODEL}/hostfile
+input="logs/${MODEL}/hostfile"
+readarray -t arr <"$input"
 
+rm logs/${MODEL}/hostfile
+for row in "${arr[@]}";do
+  row_array=(${row})
+  hostname=${row_array[0]}
+  echo "$hostname slots=8" >> logs/${MODEL}/hostfile
+  cmd="ssh ${hostname} ${ROCM_PATH}/bin/rocm-smi"
+  echo $cmd
+  $cmd
+done
 
+export MASTER_ADDR=${arr[0]}
+export MASTER_PORT=29500
 
+SECONDARY_CONFIG=${SECONDARY_CONFIG:-lux.yml}
 
+python -u ./deepy.py train.py -d configs ${MODEL}.yml ${SECONDARY_CONFIG}
