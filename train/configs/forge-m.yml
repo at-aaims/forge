@@ -1,9 +1,9 @@
-# GPT-2 pretraining setup
+# forge pretraining setup
 {
-
+   "hostfile": "logs/forge-m/hostfile",
    "tokenizer_type": "HFTokenizer",
-   "data-path": "data/tokens/all_text_document",
-   "vocab-file": "data/tokens/all_vocab.json",
+   "data-path": "/lustre/orion/world-shared/stf218/junqi/data/forge/all_text_document",
+   "vocab-file": "/lustre/orion/world-shared/stf218/junqi/data/forge/all_vocab.json",
 
    # parallelism settings ( you will want to change these based on your cluster setup, ideally scheduling pipeline stages
    # across the node boundaries )

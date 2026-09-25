@@ -24,6 +24,6 @@
   "log-dir": "logs",
   "use_wandb": False,
 
-  "deepspeed_mpi": True,
+  #"deepspeed_mpi": True,
   "launcher": "slurm"
 }
